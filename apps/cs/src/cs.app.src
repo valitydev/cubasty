@@ -1,0 +1,21 @@
+{application, cs, [
+    {description, "Customer Storage Service"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {cs_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        genlib,
+        scoper,
+        woody,
+        damsel,
+        epg_connector,
+        prometheus,
+        jsone
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
