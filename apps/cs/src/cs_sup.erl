@@ -67,9 +67,8 @@ set_database_url() ->
             database := DbName
         }
     } = application_get_env(epg_connector, databases),
-    PgPortStr = erlang:integer_to_list(PgPort),
     Value = lists:concat([
-        "postgresql://", PgUser, ":", PgPassword, "@", PgHost, ":", PgPortStr, "/", DbName
+        "postgresql://", PgUser, ":", PgPassword(), "@", PgHost, ":", PgPort, "/", DbName
     ]),
     true = os:putenv("DATABASE_URL", Value).
 

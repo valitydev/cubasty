@@ -11,10 +11,8 @@
         woody,
         damsel,
         epg_connector,
-        epgsql,
-        epgsql_pool,
         prometheus,
-        jsx
+        jsone
     ]},
     {env, []},
     {modules, []},
