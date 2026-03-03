@@ -56,7 +56,7 @@ dbinit() ->
             DbOpts = maps:get(DbRef, Databases),
             MigrationOpts = application_get_env(?APP, migration_opts, ?DEFAULT_MIGRATION_OPTS),
             logger:info("migrations for cs start"),
-            {ok, _} = epg_migrator:perform("cs", DbOpts, MigrationOpts, filename:join([MigrationsDir, "cs"])),
+            {ok, _} = epg_migrator:perform("cs", DbOpts, MigrationOpts, MigrationsDir),
             logger:info("migrations for cs success"),
             ok
     end.
