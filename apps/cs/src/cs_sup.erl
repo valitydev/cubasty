@@ -71,7 +71,7 @@ check_db_connection(
             ok;
         {error, Reason} ->
             logger:error("DB connection check failed, reason: ~p, db_opts: ~p", [Reason, DbOpts]),
-            error({db_connection_failed, Reason})
+            error({db_connection_failed, Reason, DbOpts})
     end.
 
 get_handlers() ->
