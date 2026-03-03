@@ -62,7 +62,9 @@ dbinit() ->
             ok
     end.
 
-check_db_connection(#{host := Host, port := Port, database := Database, username := Username, password := Password} = DbOpts) ->
+check_db_connection(
+    #{host := Host, port := Port, database := Database, username := Username, password := Password} = DbOpts
+) ->
     case epgsql:connect(Host, Username, Password, [{database, Database}, {port, Port}, {timeout, 5000}]) of
         {ok, Conn} ->
             epgsql:close(Conn),
