@@ -131,7 +131,7 @@ cleanup_db() ->
         "            SELECT table_name\n"
         "            FROM information_schema.tables\n"
         "            WHERE table_schema='public'\n"
-        "            AND NOT table_name = '__migrations'\n"
+        "            AND NOT table_name = 'schema_migrations'\n"
         "        ) LOOP\n"
         "            EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.table_name) || ' RESTART IDENTITY CASCADE';\n"
         "        END LOOP;\n"

@@ -65,12 +65,6 @@ wdeps-%: dev-image
 
 # Submodules tasks
 
-make_psql_migration:
-	make -C psql-migration/
-	mkdir -p bin
-	mkdir -p migrations
-	cp ./psql-migration/_build/default/bin/psql_migration ./bin
-
 # Rebar tasks
 
 rebar-shell:

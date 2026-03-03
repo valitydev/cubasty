@@ -39,13 +39,6 @@ WORKDIR /opt/${SERVICE_NAME}
 
 COPY --from=builder /build/_build/prod/rel/${SERVICE_NAME} /opt/${SERVICE_NAME}
 
-# Set up migration
-COPY --from=builder /build/migrations /opt/${SERVICE_NAME}/migrations
-COPY --from=builder /build/.env /opt/${SERVICE_NAME}/.env
-COPY --from=builder /build/rebar.lock /opt/${SERVICE_NAME}/rebar.lock
-
-ENV WORK_DIR=/opt/${SERVICE_NAME}
-
 RUN echo "#!/bin/sh" >> /entrypoint.sh && \
     echo "exec /opt/${SERVICE_NAME}/bin/${SERVICE_NAME} foreground" >> /entrypoint.sh && \
     chmod +x /entrypoint.sh
