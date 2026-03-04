@@ -55,23 +55,10 @@ dbinit() ->
             {ok, Databases} = application:get_env(epg_connector, databases),
             DbOpts = maps:get(DbRef, Databases),
             MigrationOpts = application_get_env(?APP, migration_opts, ?DEFAULT_MIGRATION_OPTS),
-            ok = check_db_connection(DbOpts),
             logger:info("migrations for cs start"),
             {ok, _} = epg_migrator:perform("cs", DbOpts, MigrationOpts, MigrationsDir),
             logger:info("migrations for cs success"),
             ok
-    end.
-
-check_db_connection(
-    #{host := Host, port := Port, database := Database, username := Username, password := Password} = DbOpts
-) ->
-    case epgsql:connect(Host, Username, Password, [{database, Database}, {port, Port}, {timeout, 5000}]) of
-        {ok, Conn} ->
-            epgsql:close(Conn),
-            ok;
-        {error, Reason} ->
-            logger:error("DB connection check failed, reason: ~p, db_opts: ~p", [Reason, DbOpts]),
-            error({db_connection_failed, Reason, DbOpts})
     end.
 
 get_handlers() ->
