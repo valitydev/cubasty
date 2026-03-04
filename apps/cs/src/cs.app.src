@@ -11,8 +11,14 @@
         woody,
         damsel,
         epg_connector,
+        epg_migrator,
+        erl_health,
         prometheus,
-        jsone
+        prometheus_cowboy,
+        jsone,
+        opentelemetry_api,
+        opentelemetry_exporter,
+        opentelemetry
     ]},
     {env, []},
     {modules, []},

@@ -8,6 +8,7 @@
 
 -define(APP, cs).
 -define(DEFAULT_DB, cs).
+-define(DEFAULT_MIGRATION_OPTS, []).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
@@ -45,37 +46,19 @@ init(_) ->
 %% Internal functions
 
 dbinit() ->
-    WorkDir = get_env_var("WORK_DIR"),
-    _ = set_database_url(),
-    MigrationsPath = WorkDir ++ "/migrations",
-    Cmd = "run",
-    case cs_db_migration:process(["-d", MigrationsPath, Cmd]) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            error({migrations_error, Reason})
-    end.
-
-set_database_url() ->
-    EpgDbName = application_get_env(?APP, epg_db_name, ?DEFAULT_DB),
-    #{
-        EpgDbName := #{
-            host := PgHost,
-            port := PgPort,
-            username := PgUser,
-            password := PgPassword,
-            database := DbName
-        }
-    } = application_get_env(epg_connector, databases),
-    Value = lists:concat([
-        "postgresql://", PgUser, ":", PgPassword(), "@", PgHost, ":", PgPort, "/", DbName
-    ]),
-    true = os:putenv("DATABASE_URL", Value).
-
-get_env_var(Name) ->
-    case os:getenv(Name) of
-        false -> error({os_env_required, Name});
-        V -> V
+    case code:priv_dir(?APP) of
+        {error, _} ->
+            error({migration_error, cant_find_priv_dir});
+        Path ->
+            MigrationsDir = filename:join([Path, "migrations"]),
+            DbRef = application_get_env(?APP, epg_db_name, ?DEFAULT_DB),
+            {ok, Databases} = application:get_env(epg_connector, databases),
+            DbOpts = maps:get(DbRef, Databases),
+            MigrationOpts = application_get_env(?APP, migration_opts, ?DEFAULT_MIGRATION_OPTS),
+            logger:info("migrations for cs start"),
+            {ok, _} = epg_migrator:perform("cs", DbOpts, MigrationOpts, MigrationsDir),
+            logger:info("migrations for cs success"),
+            ok
     end.
 
 get_handlers() ->
@@ -116,9 +99,6 @@ enable_health_logging(Check) ->
 -spec get_prometheus_route() -> {iodata(), module(), _Opts :: any()}.
 get_prometheus_route() ->
     {"/metrics/[:registry]", prometheus_cowboy2_handler, []}.
-
-application_get_env(App, Key) ->
-    application_get_env(App, Key, undefined).
 
 application_get_env(App, Key, Default) ->
     case application:get_env(App, Key) of
