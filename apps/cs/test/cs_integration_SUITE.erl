@@ -20,6 +20,8 @@
     delete_customer_test/1,
     customer_not_found_test/1,
     add_bank_card_test/1,
+    add_bank_card_idempotent_test/1,
+    add_bank_card_idempotent_different_customers_test/1,
     remove_bank_card_test/1,
     add_payment_test/1,
     get_payments_test/1,
@@ -45,6 +47,8 @@ groups() ->
             create_customer_test,
             get_customer_test,
             add_bank_card_test,
+            add_bank_card_idempotent_test,
+            add_bank_card_idempotent_different_customers_test,
             add_payment_test,
             get_payments_test,
             get_payments_pagination_test,
@@ -156,6 +160,34 @@ add_bank_card_test(Config) ->
     ),
     ?assert(is_binary(BankCard#customer_BankCard.id)),
     ?assertEqual(<<"token-1">>, BankCard#customer_BankCard.bank_card_token),
+    ok.
+
+%% Adding the same bank card token to the same customer twice should succeed (idempotent)
+add_bank_card_idempotent_test(Config) ->
+    Client = ?config(client, Config),
+    {ok, Customer} = cs_client:create_customer(
+        #customer_CustomerParams{
+            party_ref = #domain_PartyConfigRef{id = <<"party-idempotent">>}
+        },
+        Client
+    ),
+    CustomerId = Customer#customer_Customer.id,
+    Params = #customer_BankCardParams{bank_card_token = <<"token-idempotent">>},
+    {ok, BankCard1} = cs_client:add_bank_card(CustomerId, Params, Client),
+    {ok, BankCard2} = cs_client:add_bank_card(CustomerId, Params, Client),
+    ?assertEqual(BankCard1#customer_BankCard.id, BankCard2#customer_BankCard.id),
+    ok.
+
+%% Same bank card token added to two different customers of the same party should reuse the card
+add_bank_card_idempotent_different_customers_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-shared-card">>},
+    {ok, Customer1} = cs_client:create_customer(#customer_CustomerParams{party_ref = PartyRef}, Client),
+    {ok, Customer2} = cs_client:create_customer(#customer_CustomerParams{party_ref = PartyRef}, Client),
+    Params = #customer_BankCardParams{bank_card_token = <<"token-shared">>},
+    {ok, BankCard1} = cs_client:add_bank_card(Customer1#customer_Customer.id, Params, Client),
+    {ok, BankCard2} = cs_client:add_bank_card(Customer2#customer_Customer.id, Params, Client),
+    ?assertEqual(BankCard1#customer_BankCard.id, BankCard2#customer_BankCard.id),
     ok.
 
 remove_bank_card_test(Config) ->
