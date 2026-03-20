@@ -205,6 +205,8 @@ find_or_create(BankCardToken, PartyRef, CardMask) ->
         ON target.bank_card_token = source.bank_card_token AND target.deleted_at IS NULL
         WHEN NOT MATCHED THEN
             INSERT (bank_card_token, card_mask) VALUES (source.bank_card_token, source.card_mask)
+        WHEN MATCHED THEN
+            UPDATE SET card_mask = source.card_mask
         RETURNING id
     )
     MERGE INTO bank_card_party AS target
