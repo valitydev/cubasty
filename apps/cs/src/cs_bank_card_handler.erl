@@ -41,7 +41,7 @@ do_handle_function('Create', {PartyRef, Params}, _Context, _Options) ->
         bank_card_token = BankCardToken,
         card_mask = CardMask
     } = Params,
-    case cs_bank_card:create(PartyRef, BankCardToken, CardMask) of
+    case cs_bank_card:find_or_create(PartyRef, BankCardToken, CardMask) of
         {ok, BankCardId} ->
             {ok, BankCard} = cs_bank_card:get_with_tokens(BankCardId),
             {ok, cs_mapper:bank_card_with_tokens_to_thrift(BankCard)};
