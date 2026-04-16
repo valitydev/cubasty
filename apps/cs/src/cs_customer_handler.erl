@@ -17,9 +17,10 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
     #customer_CustomerParams{
         party_ref = PartyRef,
         contact_info = ContactInfo,
-        metadata = Metadata
+        metadata = Metadata,
+        external_id = ExternalID
     } = Params,
-    case cs_customer:create(PartyRef, ContactInfo, Metadata) of
+    case cs_customer:create(PartyRef, ContactInfo, Metadata, ExternalID) of
         {ok, CustomerId} ->
             {ok, CustomerState} = cs_customer:get_state(CustomerId),
             {ok, cs_mapper:customer_to_thrift(maps:get(customer, CustomerState))};
@@ -28,6 +29,15 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
     end;
 do_handle_function('Get', {CustomerId}, _Context, _Options) ->
     case cs_customer:get_state(CustomerId) of
+        {ok, State} ->
+            {ok, cs_mapper:customer_state_to_thrift(State)};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetByExternalID', {ExternalID, PartyRef}, _Context, _Options) ->
+    case cs_customer:get_by_external_id(ExternalID, PartyRef) of
         {ok, State} ->
             {ok, cs_mapper:customer_state_to_thrift(State)};
         {error, not_found} ->

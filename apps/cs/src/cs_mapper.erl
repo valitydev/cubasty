@@ -44,7 +44,8 @@ customer_to_thrift(Customer) ->
         created_at = format_timestamp_required(maps:get(created_at, Customer)),
         status = customer_status(Customer),
         contact_info = maps:get(contact_info, Customer, undefined),
-        metadata = maps:get(metadata, Customer, undefined)
+        metadata = maps:get(metadata, Customer, undefined),
+        external_id = maps:get(external_id, Customer, undefined)
     }.
 
 -spec customer_state_to_thrift(customer_state()) -> dmsl_customer_thrift:'CustomerState'().

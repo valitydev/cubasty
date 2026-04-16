@@ -1,9 +1,10 @@
 -module(cs_customer).
 
 -export([
-    create/3,
+    create/4,
     get/1,
     get_state/1,
+    get_by_external_id/2,
     get_by_payment/2,
     delete/1,
     add_bank_card/2,
@@ -29,7 +30,8 @@
     contact_info => contact_info(),
     metadata => metadata(),
     created_at := binary(),
-    deleted_at => binary() | undefined
+    deleted_at => binary() | undefined,
+    external_id => binary() | undefined
 }.
 -type customer_state() :: #{
     customer := customer(),
@@ -44,10 +46,11 @@
 
 %% API
 
--spec create(party_ref(), contact_info(), metadata()) -> {ok, customer_id()} | {error, term()}.
-create(PartyRef, ContactInfo, Metadata) ->
+-spec create(party_ref(), contact_info(), metadata(), binary() | undefined) ->
+    {ok, customer_id()} | {error, term()}.
+create(PartyRef, ContactInfo, Metadata, ExternalID) ->
     PartyRefJson = party_ref_to_json(PartyRef),
-    cs_customer_database:create(PartyRefJson, ContactInfo, Metadata).
+    cs_customer_database:create(PartyRefJson, ContactInfo, Metadata, ExternalID).
 
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
 get(CustomerId) ->
@@ -76,6 +79,18 @@ get_state(CustomerId) ->
                 bank_card_refs => BankCardIds,
                 payment_refs => PaymentRefs
             }};
+        Error ->
+            Error
+    end.
+
+-spec get_by_external_id(binary(), party_ref()) ->
+    {ok, customer_state()} | {error, not_found | term()}.
+get_by_external_id(ExternalID, PartyRef) ->
+    PartyRefJson = party_ref_to_json(PartyRef),
+    case cs_customer_database:get_by_external_id(ExternalID, PartyRefJson) of
+        {ok, Customer} ->
+            CustomerId = maps:get(id, Customer),
+            get_state(CustomerId);
         Error ->
             Error
     end.

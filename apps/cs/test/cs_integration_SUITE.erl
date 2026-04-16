@@ -29,6 +29,8 @@
     get_bank_cards_test/1,
     get_bank_cards_pagination_test/1,
     get_by_parent_payment_test/1,
+    get_by_external_id_test/1,
+    get_by_external_id_not_found_test/1,
     create_bank_card_test/1,
     find_bank_card_test/1,
     add_recurrent_token_test/1,
@@ -55,6 +57,8 @@ groups() ->
             get_bank_cards_test,
             get_bank_cards_pagination_test,
             get_by_parent_payment_test,
+            get_by_external_id_test,
+            get_by_external_id_not_found_test,
             remove_bank_card_test,
             delete_customer_test,
             customer_not_found_test
@@ -91,10 +95,12 @@ create_customer_test(Config) ->
     PartyRef = #domain_PartyConfigRef{id = <<"party-1">>},
     Metadata = {obj, #{<<"key">> => {str, <<"value">>}, <<"nested">> => {obj, #{<<"inner">> => {i, 42}}}}},
     ContactInfo = #domain_ContactInfo{phone_number = <<"+1234567890">>, email = <<"test@example.com">>},
+    ExternalID = <<"ext-customer-1">>,
     Params = #customer_CustomerParams{
         party_ref = PartyRef,
         contact_info = ContactInfo,
-        metadata = Metadata
+        metadata = Metadata,
+        external_id = ExternalID
     },
     {ok, Customer} = cs_client:create_customer(Params, Client),
     ?assert(is_binary(Customer#customer_Customer.id)),
@@ -103,11 +109,14 @@ create_customer_test(Config) ->
     ?assertEqual(Metadata, Customer#customer_Customer.metadata),
     %% Validate contact_info was saved correctly
     ?assertEqual(ContactInfo, Customer#customer_Customer.contact_info),
+    %% Validate external_id was saved correctly
+    ?assertEqual(ExternalID, Customer#customer_Customer.external_id),
     %% Fetch and verify persisted data
     {ok, State} = cs_client:get_customer(Customer#customer_Customer.id, Client),
     StoredCustomer = State#customer_CustomerState.customer,
     ?assertEqual(Metadata, StoredCustomer#customer_Customer.metadata),
     ?assertEqual(ContactInfo, StoredCustomer#customer_Customer.contact_info),
+    ?assertEqual(ExternalID, StoredCustomer#customer_Customer.external_id),
     ok.
 
 get_customer_test(Config) ->
@@ -342,6 +351,30 @@ get_by_parent_payment_test(Config) ->
     {ok, ok} = cs_client:add_payment(CustomerId, <<"invoice-parent">>, <<"payment-parent">>, Client),
     {ok, State} = cs_client:get_customer_by_parent_payment(<<"invoice-parent">>, <<"payment-parent">>, Client),
     ?assertEqual(CustomerId, State#customer_CustomerState.customer#customer_Customer.id),
+    ok.
+
+get_by_external_id_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-id">>},
+    ExternalID = <<"ext-lookup-1">>,
+    {ok, Customer} = cs_client:create_customer(
+        #customer_CustomerParams{
+            party_ref = PartyRef,
+            external_id = ExternalID
+        },
+        Client
+    ),
+    CustomerId = Customer#customer_Customer.id,
+    {ok, State} = cs_client:get_customer_by_external_id(ExternalID, PartyRef, Client),
+    ?assertEqual(CustomerId, State#customer_CustomerState.customer#customer_Customer.id),
+    ?assertEqual(ExternalID, State#customer_CustomerState.customer#customer_Customer.external_id),
+    ok.
+
+get_by_external_id_not_found_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-id-missing">>},
+    {exception, #customer_CustomerNotFound{}} =
+        cs_client:get_customer_by_external_id(<<"nonexistent">>, PartyRef, Client),
     ok.
 
 %% Bank Card Storage Tests

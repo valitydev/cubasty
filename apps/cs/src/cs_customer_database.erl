@@ -1,8 +1,9 @@
 -module(cs_customer_database).
 
 -export([
-    create/3,
+    create/4,
     get/1,
+    get_by_external_id/2,
     get_by_payment/2,
     delete/1,
     link_bank_card/2,
@@ -25,15 +26,15 @@
 
 %% API
 
--spec create(binary(), term(), term()) ->
+-spec create(binary(), term(), term(), binary() | undefined) ->
     {ok, customer_id()} | {error, term()}.
-create(PartyRef, ContactInfo, Metadata) ->
+create(PartyRef, ContactInfo, Metadata, ExternalID) ->
     Query = """
-    INSERT INTO customer (party_ref, contact_info, metadata)
-    VALUES ($1, $2, $3)
+    INSERT INTO customer (party_ref, contact_info, metadata, external_id)
+    VALUES ($1, $2, $3, $4)
     RETURNING id
     """,
-    Params = [PartyRef, encode_contact_info(ContactInfo), encode_metadata(Metadata)],
+    Params = [PartyRef, encode_contact_info(ContactInfo), encode_metadata(Metadata), ExternalID],
     case epg_pool:query(?POOL, Query, Params) of
         {ok, _, _, [{Id}]} -> {ok, Id};
         {ok, _, [{Id}]} -> {ok, Id};
@@ -44,7 +45,7 @@ create(PartyRef, ContactInfo, Metadata) ->
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
 get(CustomerId) ->
     Query = """
-    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at
+    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id
     FROM customer
     WHERE id = $1::uuid
     """,
@@ -56,10 +57,28 @@ get(CustomerId) ->
         {error, Reason} -> {error, Reason}
     end.
 
+-spec get_by_external_id(binary(), binary()) -> {ok, customer()} | {error, not_found | term()}.
+get_by_external_id(ExternalID, PartyRef) ->
+    Query = """
+    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id
+    FROM customer
+    WHERE external_id = $1
+      AND party_ref = $2
+      AND deleted_at IS NULL
+    LIMIT 1
+    """,
+    case epg_pool:query(?POOL, Query, [ExternalID, PartyRef]) of
+        {ok, _, _, [Row]} -> {ok, row_to_customer(Row)};
+        {ok, _, _, []} -> {error, not_found};
+        {ok, _, [Row]} -> {ok, row_to_customer(Row)};
+        {ok, _, []} -> {error, not_found};
+        {error, Reason} -> {error, Reason}
+    end.
+
 -spec get_by_payment(invoice_id(), payment_id()) -> {ok, customer()} | {error, not_found | term()}.
 get_by_payment(InvoiceId, PaymentId) ->
     Query = """
-    SELECT c.id, c.party_ref, c.contact_info, c.metadata, c.created_at, c.deleted_at
+    SELECT c.id, c.party_ref, c.contact_info, c.metadata, c.created_at, c.deleted_at, c.external_id
     FROM customer c
     JOIN payment_ref pr ON c.id = pr.customer_id
     WHERE pr.invoice_id = $1
@@ -169,14 +188,15 @@ get_payments(CustomerId, Limit, Offset) ->
 
 %% Internal functions
 
-row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt}) ->
+row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt, ExternalID}) ->
     #{
         id => Id,
         party_ref => PartyRef,
         contact_info => decode_contact_info(ContactInfo),
         metadata => decode_metadata(Metadata),
         created_at => CreatedAt,
-        deleted_at => null_to_default(DeletedAt, undefined)
+        deleted_at => null_to_default(DeletedAt, undefined),
+        external_id => null_to_default(ExternalID, undefined)
     }.
 
 null_to_default(null, Default) -> Default;

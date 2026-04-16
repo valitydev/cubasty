@@ -17,3 +17,6 @@ _build/
 _checkouts/
 
 .image.dev
+
+.claude
+CLAUDE.md

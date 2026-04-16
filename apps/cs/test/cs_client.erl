@@ -7,6 +7,7 @@
 -export([
     create_customer/2,
     get_customer/2,
+    get_customer_by_external_id/3,
     get_customer_by_parent_payment/3,
     delete_customer/2,
     add_bank_card/3,
@@ -37,6 +38,11 @@ create_customer(Params, Client) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
 get_customer(CustomerId, Client) ->
     cs_client_api:call(customer_management, 'Get', [CustomerId], Client).
+
+-spec get_customer_by_external_id(binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
+get_customer_by_external_id(ExternalID, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'GetByExternalID', [ExternalID, PartyRef], Client).
 
 -spec get_customer_by_parent_payment(binary(), binary(), cs_client_api:t()) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
