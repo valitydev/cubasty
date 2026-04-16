@@ -101,14 +101,14 @@ make wc-release
 | Method | Description |
 |--------|-------------|
 | `Create(CustomerParams)` | Create a new customer |
-| `Get(CustomerId)` | Get customer with linked cards and payments |
+| `Get(CustomerID)` | Get customer with linked cards and payments |
 | `GetByParentPayment(InvoiceId, PaymentId)` | Find customer by payment reference |
-| `Delete(CustomerId)` | Soft-delete a customer |
-| `AddBankCard(CustomerId, BankCardParams)` | Link a bank card to customer |
-| `RemoveBankCard(CustomerId, BankCardId)` | Unlink a bank card |
-| `GetBankCards(CustomerId, Limit, ContinuationToken)` | List customer's bank cards |
-| `AddPayment(CustomerId, PaymentRef)` | Add payment reference |
-| `GetPayments(CustomerId, Limit, ContinuationToken)` | List customer's payments |
+| `Delete(CustomerID)` | Soft-delete a customer |
+| `AddBankCard(CustomerID, BankCardParams)` | Link a bank card to customer |
+| `RemoveBankCard(CustomerID, BankCardId)` | Unlink a bank card |
+| `GetBankCards(CustomerID, Limit, ContinuationToken)` | List customer's bank cards |
+| `AddPayment(CustomerID, PaymentRef)` | Add payment reference |
+| `GetPayments(CustomerID, Limit, ContinuationToken)` | List customer's payments |
 
 ## BankCardStorage API
 

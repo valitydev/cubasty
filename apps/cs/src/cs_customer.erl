@@ -53,8 +53,8 @@ create(PartyRef, ContactInfo, Metadata, ExternalID) ->
     cs_customer_database:create(PartyRefJson, ContactInfo, Metadata, ExternalID).
 
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
-get(CustomerId) ->
-    case cs_customer_database:get(CustomerId) of
+get(CustomerID) ->
+    case cs_customer_database:get(CustomerID) of
         {ok, Customer} ->
             case maps:get(deleted_at, Customer) of
                 undefined -> {ok, Customer};
@@ -65,11 +65,11 @@ get(CustomerId) ->
     end.
 
 -spec get_state(customer_id()) -> {ok, customer_state()} | {error, not_found | term()}.
-get_state(CustomerId) ->
-    case ?MODULE:get(CustomerId) of
+get_state(CustomerID) ->
+    case ?MODULE:get(CustomerID) of
         {ok, Customer} ->
-            {ok, BankCardIds, _} = cs_customer_database:get_bank_cards(CustomerId, 1000, 0),
-            {ok, Payments, _} = cs_customer_database:get_payments(CustomerId, 1000, 0),
+            {ok, BankCardIds, _} = cs_customer_database:get_bank_cards(CustomerID, 1000, 0),
+            {ok, Payments, _} = cs_customer_database:get_payments(CustomerID, 1000, 0),
             PaymentRefs = [
                 #{invoice_id => InvId, payment_id => PayId}
              || {InvId, PayId, _} <- Payments
@@ -89,8 +89,8 @@ get_by_external_id(ExternalID, PartyRef) ->
     PartyRefJson = party_ref_to_json(PartyRef),
     case cs_customer_database:get_by_external_id(ExternalID, PartyRefJson) of
         {ok, Customer} ->
-            CustomerId = maps:get(id, Customer),
-            get_state(CustomerId);
+            CustomerID = maps:get(id, Customer),
+            get_state(CustomerID);
         Error ->
             Error
     end.
@@ -100,8 +100,8 @@ get_by_external_id(ExternalID, PartyRef) ->
 get_by_payment(InvoiceId, PaymentId) ->
     case cs_customer_database:get_by_payment(InvoiceId, PaymentId) of
         {ok, Customer} ->
-            CustomerId = maps:get(id, Customer),
-            get_state(CustomerId);
+            CustomerID = maps:get(id, Customer),
+            get_state(CustomerID);
         {error, not_found} ->
             {error, invalid_recurrent_parent};
         Error ->
@@ -109,22 +109,22 @@ get_by_payment(InvoiceId, PaymentId) ->
     end.
 
 -spec delete(customer_id()) -> ok | {error, not_found | term()}.
-delete(CustomerId) ->
-    cs_customer_database:delete(CustomerId).
+delete(CustomerID) ->
+    cs_customer_database:delete(CustomerID).
 
 -spec add_bank_card(customer_id(), bank_card_id()) -> ok | {error, customer_not_found | term()}.
-add_bank_card(CustomerId, BankCardId) ->
+add_bank_card(CustomerID, BankCardId) ->
     %% link_bank_card atomically links bank card and adds party_ref
-    cs_customer_database:link_bank_card(CustomerId, BankCardId).
+    cs_customer_database:link_bank_card(CustomerID, BankCardId).
 
 -spec remove_bank_card(customer_id(), bank_card_id()) -> ok | {error, not_found | term()}.
-remove_bank_card(CustomerId, BankCardId) ->
-    cs_customer_database:unlink_bank_card(CustomerId, BankCardId).
+remove_bank_card(CustomerID, BankCardId) ->
+    cs_customer_database:unlink_bank_card(CustomerID, BankCardId).
 
 -spec get_bank_cards(customer_id(), non_neg_integer(), non_neg_integer()) ->
     {ok, [bank_card_id()], binary() | undefined} | {error, term()}.
-get_bank_cards(CustomerId, Limit, Offset) ->
-    case cs_customer_database:get_bank_cards(CustomerId, Limit, Offset) of
+get_bank_cards(CustomerID, Limit, Offset) ->
+    case cs_customer_database:get_bank_cards(CustomerID, Limit, Offset) of
         {ok, BankCardIds, Total} ->
             Token = make_continuation_token(Offset, length(BankCardIds), Total),
             {ok, BankCardIds, Token};
@@ -133,13 +133,13 @@ get_bank_cards(CustomerId, Limit, Offset) ->
     end.
 
 -spec add_payment(customer_id(), binary(), binary()) -> ok | {error, term()}.
-add_payment(CustomerId, InvoiceId, PaymentId) ->
-    cs_customer_database:add_payment(CustomerId, InvoiceId, PaymentId).
+add_payment(CustomerID, InvoiceId, PaymentId) ->
+    cs_customer_database:add_payment(CustomerID, InvoiceId, PaymentId).
 
 -spec get_payments(customer_id(), non_neg_integer(), non_neg_integer()) ->
     {ok, [map()], binary() | undefined} | {error, term()}.
-get_payments(CustomerId, Limit, Offset) ->
-    case cs_customer_database:get_payments(CustomerId, Limit, Offset) of
+get_payments(CustomerID, Limit, Offset) ->
+    case cs_customer_database:get_payments(CustomerID, Limit, Offset) of
         {ok, Payments, Total} ->
             Token = make_continuation_token(Offset, length(Payments), Total),
             PaymentMaps = [

@@ -46,13 +46,13 @@ create(PartyRef, ContactInfo, Metadata, ExternalID) ->
     end.
 
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
-get(CustomerId) ->
+get(CustomerID) ->
     Query = """
     SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id
     FROM customer
     WHERE id = $1::uuid
     """,
-    case epg_pool:query(?POOL, Query, [CustomerId]) of
+    case epg_pool:query(?POOL, Query, [CustomerID]) of
         {ok, _, _, [Row]} -> {ok, row_to_customer(Row)};
         {ok, _, _, []} -> {error, not_found};
         {ok, _, [Row]} -> {ok, row_to_customer(Row)};
@@ -98,20 +98,20 @@ get_by_payment(InvoiceId, PaymentId) ->
     end.
 
 -spec delete(customer_id()) -> ok | {error, not_found | term()}.
-delete(CustomerId) ->
+delete(CustomerID) ->
     Query = """
     UPDATE customer
     SET deleted_at = NOW()
     WHERE id = $1 AND deleted_at IS NULL
     """,
-    case epg_pool:query(?POOL, Query, [CustomerId]) of
+    case epg_pool:query(?POOL, Query, [CustomerID]) of
         {ok, 1} -> ok;
         {ok, 0} -> {error, not_found};
         {error, Reason} -> {error, Reason}
     end.
 
 -spec link_bank_card(customer_id(), bank_card_id()) -> ok | {error, term()}.
-link_bank_card(CustomerId, BankCardId) ->
+link_bank_card(CustomerID, BankCardId) ->
     %% Atomic: link bank card to customer AND add customer's party_ref to bank_card_party
     Query = """
     WITH customer_link AS (
@@ -128,13 +128,13 @@ link_bank_card(CustomerId, BankCardId) ->
     ON CONFLICT (bank_card_id, party_ref)
     DO UPDATE SET deleted_at = NULL, created_at = NOW()
     """,
-    case epg_pool:query(?POOL, Query, [CustomerId, BankCardId]) of
+    case epg_pool:query(?POOL, Query, [CustomerID, BankCardId]) of
         {ok, _} -> ok;
         {error, Reason} -> {error, Reason}
     end.
 
 -spec unlink_bank_card(customer_id(), bank_card_id()) -> ok | {error, not_found | term()}.
-unlink_bank_card(CustomerId, BankCardId) ->
+unlink_bank_card(CustomerID, BankCardId) ->
     Query = """
     UPDATE customer_bank_card
     SET deleted_at = NOW()
@@ -142,7 +142,7 @@ unlink_bank_card(CustomerId, BankCardId) ->
       AND bank_card_id = $2
       AND deleted_at IS NULL
     """,
-    case epg_pool:query(?POOL, Query, [CustomerId, BankCardId]) of
+    case epg_pool:query(?POOL, Query, [CustomerID, BankCardId]) of
         {ok, 1} -> ok;
         {ok, 0} -> {error, not_found};
         {error, Reason} -> {error, Reason}
@@ -150,7 +150,7 @@ unlink_bank_card(CustomerId, BankCardId) ->
 
 -spec get_bank_cards(customer_id(), non_neg_integer(), non_neg_integer()) ->
     {ok, [bank_card_id()], non_neg_integer()} | {error, term()}.
-get_bank_cards(CustomerId, Limit, Offset) ->
+get_bank_cards(CustomerID, Limit, Offset) ->
     Query = """
     SELECT bc.id, COUNT(*) OVER() AS total
     FROM bank_card bc
@@ -162,23 +162,23 @@ get_bank_cards(CustomerId, Limit, Offset) ->
     LIMIT $2 OFFSET $3
     """,
     RowMapper = fun({Id, _Total}) -> Id end,
-    query_with_total(?POOL, Query, [CustomerId, Limit, Offset], RowMapper).
+    query_with_total(?POOL, Query, [CustomerID, Limit, Offset], RowMapper).
 
 -spec add_payment(customer_id(), invoice_id(), payment_id()) -> ok | {error, term()}.
-add_payment(CustomerId, InvoiceId, PaymentId) ->
+add_payment(CustomerID, InvoiceId, PaymentId) ->
     Query = """
     INSERT INTO payment_ref (customer_id, invoice_id, payment_id)
     VALUES ($1, $2, $3)
     ON CONFLICT (invoice_id, payment_id) DO NOTHING
     """,
-    case epg_pool:query(?POOL, Query, [CustomerId, InvoiceId, PaymentId]) of
+    case epg_pool:query(?POOL, Query, [CustomerID, InvoiceId, PaymentId]) of
         {ok, _} -> ok;
         {error, Reason} -> {error, Reason}
     end.
 
 -spec get_payments(customer_id(), non_neg_integer(), non_neg_integer()) ->
     {ok, [{invoice_id(), payment_id(), binary()}], non_neg_integer()} | {error, term()}.
-get_payments(CustomerId, Limit, Offset) ->
+get_payments(CustomerID, Limit, Offset) ->
     Query = """
     SELECT invoice_id, payment_id, created_at, COUNT(*) OVER() AS total
     FROM payment_ref
@@ -187,7 +187,7 @@ get_payments(CustomerId, Limit, Offset) ->
     LIMIT $2 OFFSET $3
     """,
     RowMapper = fun({InvId, PayId, CreatedAt, _Total}) -> {InvId, PayId, CreatedAt} end,
-    query_with_total(?POOL, Query, [CustomerId, Limit, Offset], RowMapper).
+    query_with_total(?POOL, Query, [CustomerID, Limit, Offset], RowMapper).
 
 %% Internal functions
 

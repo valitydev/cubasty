@@ -21,8 +21,8 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
         external_id = ExternalID
     } = Params,
     case cs_customer:create(PartyRef, ContactInfo, Metadata, ExternalID) of
-        {ok, CustomerId} ->
-            {ok, CustomerState} = cs_customer:get_state(CustomerId),
+        {ok, CustomerID} ->
+            {ok, CustomerState} = cs_customer:get_state(CustomerID),
             {ok, cs_mapper:customer_to_thrift(maps:get(customer, CustomerState))};
         {error, external_id_conflict} ->
             woody_error:raise(business, #customer_CustomerAlreadyExists{
@@ -31,8 +31,8 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('Get', {CustomerId}, _Context, _Options) ->
-    case cs_customer:get_state(CustomerId) of
+do_handle_function('Get', {CustomerID}, _Context, _Options) ->
+    case cs_customer:get_state(CustomerID) of
         {ok, State} ->
             {ok, cs_mapper:customer_state_to_thrift(State)};
         {error, not_found} ->
@@ -60,8 +60,8 @@ do_handle_function('GetByParentPayment', {InvoiceId, PaymentId}, _Context, _Opti
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('Delete', {CustomerId}, _Context, _Options) ->
-    case cs_customer:delete(CustomerId) of
+do_handle_function('Delete', {CustomerID}, _Context, _Options) ->
+    case cs_customer:delete(CustomerID) of
         ok ->
             {ok, ok};
         {error, not_found} ->
@@ -69,17 +69,17 @@ do_handle_function('Delete', {CustomerId}, _Context, _Options) ->
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('AddBankCard', {CustomerId, Params}, _Context, _Options) ->
+do_handle_function('AddBankCard', {CustomerID, Params}, _Context, _Options) ->
     #customer_BankCardParams{
         bank_card_token = BankCardToken,
         card_mask = CardMask
     } = Params,
-    case cs_customer:get(CustomerId) of
+    case cs_customer:get(CustomerID) of
         {ok, Customer} ->
             PartyRef = json_to_party_ref(maps:get(party_ref, Customer)),
             case cs_bank_card:find_or_create(PartyRef, BankCardToken, CardMask) of
                 {ok, BankCardId} ->
-                    case cs_customer:add_bank_card(CustomerId, BankCardId) of
+                    case cs_customer:add_bank_card(CustomerID, BankCardId) of
                         ok ->
                             {ok, BankCard} = cs_bank_card:get_with_tokens(BankCardId),
                             {ok, cs_mapper:bank_card_with_tokens_to_thrift(BankCard)};
@@ -94,10 +94,10 @@ do_handle_function('AddBankCard', {CustomerId, Params}, _Context, _Options) ->
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('RemoveBankCard', {CustomerId, BankCardId}, _Context, _Options) ->
-    case cs_customer:get(CustomerId) of
+do_handle_function('RemoveBankCard', {CustomerID, BankCardId}, _Context, _Options) ->
+    case cs_customer:get(CustomerID) of
         {ok, _} ->
-            case cs_customer:remove_bank_card(CustomerId, BankCardId) of
+            case cs_customer:remove_bank_card(CustomerID, BankCardId) of
                 ok ->
                     {ok, ok};
                 {error, not_found} ->
@@ -110,10 +110,10 @@ do_handle_function('RemoveBankCard', {CustomerId, BankCardId}, _Context, _Option
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('AddPayment', {CustomerId, InvoiceId, PaymentId}, _Context, _Options) ->
-    case cs_customer:get(CustomerId) of
+do_handle_function('AddPayment', {CustomerID, InvoiceId, PaymentId}, _Context, _Options) ->
+    case cs_customer:get(CustomerID) of
         {ok, _} ->
-            case cs_customer:add_payment(CustomerId, InvoiceId, PaymentId) of
+            case cs_customer:add_payment(CustomerID, InvoiceId, PaymentId) of
                 ok ->
                     {ok, ok};
                 {error, Reason} ->
@@ -124,11 +124,11 @@ do_handle_function('AddPayment', {CustomerId, InvoiceId, PaymentId}, _Context, _
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetPayments', {CustomerId, Limit, ContinuationToken}, _Context, _Options) ->
-    case cs_customer:get(CustomerId) of
+do_handle_function('GetPayments', {CustomerID, Limit, ContinuationToken}, _Context, _Options) ->
+    case cs_customer:get(CustomerID) of
         {ok, _} ->
             Offset = cs_pagination:decode(ContinuationToken),
-            case cs_customer:get_payments(CustomerId, Limit, Offset) of
+            case cs_customer:get_payments(CustomerID, Limit, Offset) of
                 {ok, Payments, NextToken} ->
                     PaymentsThrift = [cs_mapper:payment_to_thrift(P) || P <- Payments],
                     {ok, #customer_CustomerPaymentsResponse{
@@ -143,11 +143,11 @@ do_handle_function('GetPayments', {CustomerId, Limit, ContinuationToken}, _Conte
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetBankCards', {CustomerId, Limit, ContinuationToken}, _Context, _Options) ->
-    case cs_customer:get(CustomerId) of
+do_handle_function('GetBankCards', {CustomerID, Limit, ContinuationToken}, _Context, _Options) ->
+    case cs_customer:get(CustomerID) of
         {ok, _Customer} ->
             Offset = cs_pagination:decode(ContinuationToken),
-            case cs_customer:get_bank_cards(CustomerId, Limit, Offset) of
+            case cs_customer:get_bank_cards(CustomerID, Limit, Offset) of
                 {ok, BankCardIds, NextToken} ->
                     BankCardsInfo = lists:filtermap(fun get_bank_card_info/1, BankCardIds),
                     {ok, #customer_CustomerBankCardsResponse{
