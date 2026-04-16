@@ -13,6 +13,8 @@
     get_payments/3
 ]).
 
+-include_lib("epgsql/include/epgsql.hrl").
+
 -define(POOL, default_pool).
 
 %% Types
@@ -38,6 +40,7 @@ create(PartyRef, ContactInfo, Metadata, ExternalID) ->
     case epg_pool:query(?POOL, Query, Params) of
         {ok, _, _, [{Id}]} -> {ok, Id};
         {ok, _, [{Id}]} -> {ok, Id};
+        {error, #error{codename = unique_violation}} -> {error, external_id_conflict};
         {error, Reason} -> {error, Reason};
         Other -> {error, {unexpected_result, Other}}
     end.

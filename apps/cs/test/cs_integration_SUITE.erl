@@ -31,6 +31,7 @@
     get_by_parent_payment_test/1,
     get_by_external_id_test/1,
     get_by_external_id_not_found_test/1,
+    create_customer_external_id_conflict_test/1,
     create_bank_card_test/1,
     find_bank_card_test/1,
     add_recurrent_token_test/1,
@@ -59,6 +60,7 @@ groups() ->
             get_by_parent_payment_test,
             get_by_external_id_test,
             get_by_external_id_not_found_test,
+            create_customer_external_id_conflict_test,
             remove_bank_card_test,
             delete_customer_test,
             customer_not_found_test
@@ -375,6 +377,22 @@ get_by_external_id_not_found_test(Config) ->
     PartyRef = #domain_PartyConfigRef{id = <<"party-ext-id-missing">>},
     {exception, #customer_CustomerNotFound{}} =
         cs_client:get_customer_by_external_id(<<"nonexistent">>, PartyRef, Client),
+    ok.
+
+create_customer_external_id_conflict_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-conflict">>},
+    ExternalID = <<"ext-conflict-1">>,
+    Params = #customer_CustomerParams{
+        party_ref = PartyRef,
+        external_id = ExternalID
+    },
+    {ok, Customer} = cs_client:create_customer(Params, Client),
+    CustomerID = Customer#customer_Customer.id,
+    %% Creating another customer with the same external_id and party should conflict
+    {exception, #customer_CustomerAlreadyExists{id = ConflictID}} =
+        cs_client:create_customer(Params, Client),
+    ?assertEqual(CustomerID, ConflictID),
     ok.
 
 %% Bank Card Storage Tests

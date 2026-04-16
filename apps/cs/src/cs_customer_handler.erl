@@ -24,6 +24,10 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
         {ok, CustomerId} ->
             {ok, CustomerState} = cs_customer:get_state(CustomerId),
             {ok, cs_mapper:customer_to_thrift(maps:get(customer, CustomerState))};
+        {error, external_id_conflict} ->
+            woody_error:raise(business, #customer_CustomerAlreadyExists{
+                id = get_existing_customer_id(ExternalID, PartyRef)
+            });
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
@@ -164,6 +168,12 @@ do_handle_function('GetBankCards', {CustomerId, Limit, ContinuationToken}, _Cont
 -spec default_handling_timeout(map()) -> non_neg_integer().
 default_handling_timeout(#{default_handling_timeout := Timeout}) ->
     Timeout.
+
+get_existing_customer_id(ExternalID, PartyRef) ->
+    case cs_customer:get_by_external_id(ExternalID, PartyRef) of
+        {ok, #{customer := Customer}} -> maps:get(id, Customer);
+        {error, not_found} -> undefined
+    end.
 
 get_bank_card_info(BankCardId) ->
     case cs_bank_card:get_info(BankCardId) of
