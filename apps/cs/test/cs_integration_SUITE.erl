@@ -20,6 +20,8 @@
     delete_customer_test/1,
     customer_not_found_test/1,
     add_bank_card_test/1,
+    add_bank_card_idempotent_test/1,
+    add_bank_card_idempotent_different_customers_test/1,
     remove_bank_card_test/1,
     add_payment_test/1,
     get_payments_test/1,
@@ -27,6 +29,9 @@
     get_bank_cards_test/1,
     get_bank_cards_pagination_test/1,
     get_by_parent_payment_test/1,
+    get_by_external_id_test/1,
+    get_by_external_id_not_found_test/1,
+    create_customer_external_id_conflict_test/1,
     create_bank_card_test/1,
     find_bank_card_test/1,
     add_recurrent_token_test/1,
@@ -45,12 +50,17 @@ groups() ->
             create_customer_test,
             get_customer_test,
             add_bank_card_test,
+            add_bank_card_idempotent_test,
+            add_bank_card_idempotent_different_customers_test,
             add_payment_test,
             get_payments_test,
             get_payments_pagination_test,
             get_bank_cards_test,
             get_bank_cards_pagination_test,
             get_by_parent_payment_test,
+            get_by_external_id_test,
+            get_by_external_id_not_found_test,
+            create_customer_external_id_conflict_test,
             remove_bank_card_test,
             delete_customer_test,
             customer_not_found_test
@@ -87,10 +97,12 @@ create_customer_test(Config) ->
     PartyRef = #domain_PartyConfigRef{id = <<"party-1">>},
     Metadata = {obj, #{<<"key">> => {str, <<"value">>}, <<"nested">> => {obj, #{<<"inner">> => {i, 42}}}}},
     ContactInfo = #domain_ContactInfo{phone_number = <<"+1234567890">>, email = <<"test@example.com">>},
+    ExternalID = <<"ext-customer-1">>,
     Params = #customer_CustomerParams{
         party_ref = PartyRef,
         contact_info = ContactInfo,
-        metadata = Metadata
+        metadata = Metadata,
+        external_id = ExternalID
     },
     {ok, Customer} = cs_client:create_customer(Params, Client),
     ?assert(is_binary(Customer#customer_Customer.id)),
@@ -99,11 +111,14 @@ create_customer_test(Config) ->
     ?assertEqual(Metadata, Customer#customer_Customer.metadata),
     %% Validate contact_info was saved correctly
     ?assertEqual(ContactInfo, Customer#customer_Customer.contact_info),
+    %% Validate external_id was saved correctly
+    ?assertEqual(ExternalID, Customer#customer_Customer.external_id),
     %% Fetch and verify persisted data
     {ok, State} = cs_client:get_customer(Customer#customer_Customer.id, Client),
     StoredCustomer = State#customer_CustomerState.customer,
     ?assertEqual(Metadata, StoredCustomer#customer_Customer.metadata),
     ?assertEqual(ContactInfo, StoredCustomer#customer_Customer.contact_info),
+    ?assertEqual(ExternalID, StoredCustomer#customer_Customer.external_id),
     ok.
 
 get_customer_test(Config) ->
@@ -114,9 +129,9 @@ get_customer_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, State} = cs_client:get_customer(CustomerId, Client),
-    ?assertEqual(CustomerId, State#customer_CustomerState.customer#customer_Customer.id),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, State} = cs_client:get_customer(CustomerID, Client),
+    ?assertEqual(CustomerID, State#customer_CustomerState.customer#customer_Customer.id),
     ok.
 
 delete_customer_test(Config) ->
@@ -127,9 +142,9 @@ delete_customer_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, ok} = cs_client:delete_customer(CustomerId, Client),
-    {exception, #customer_CustomerNotFound{}} = cs_client:get_customer(CustomerId, Client),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, ok} = cs_client:delete_customer(CustomerID, Client),
+    {exception, #customer_CustomerNotFound{}} = cs_client:get_customer(CustomerID, Client),
     ok.
 
 customer_not_found_test(Config) ->
@@ -158,6 +173,34 @@ add_bank_card_test(Config) ->
     ?assertEqual(<<"token-1">>, BankCard#customer_BankCard.bank_card_token),
     ok.
 
+%% Adding the same bank card token to the same customer twice should succeed (idempotent)
+add_bank_card_idempotent_test(Config) ->
+    Client = ?config(client, Config),
+    {ok, Customer} = cs_client:create_customer(
+        #customer_CustomerParams{
+            party_ref = #domain_PartyConfigRef{id = <<"party-idempotent">>}
+        },
+        Client
+    ),
+    CustomerID = Customer#customer_Customer.id,
+    Params = #customer_BankCardParams{bank_card_token = <<"token-idempotent">>},
+    {ok, BankCard1} = cs_client:add_bank_card(CustomerID, Params, Client),
+    {ok, BankCard2} = cs_client:add_bank_card(CustomerID, Params, Client),
+    ?assertEqual(BankCard1#customer_BankCard.id, BankCard2#customer_BankCard.id),
+    ok.
+
+%% Same bank card token added to two different customers of the same party should reuse the card
+add_bank_card_idempotent_different_customers_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-shared-card">>},
+    {ok, Customer1} = cs_client:create_customer(#customer_CustomerParams{party_ref = PartyRef}, Client),
+    {ok, Customer2} = cs_client:create_customer(#customer_CustomerParams{party_ref = PartyRef}, Client),
+    Params = #customer_BankCardParams{bank_card_token = <<"token-shared">>},
+    {ok, BankCard1} = cs_client:add_bank_card(Customer1#customer_Customer.id, Params, Client),
+    {ok, BankCard2} = cs_client:add_bank_card(Customer2#customer_Customer.id, Params, Client),
+    ?assertEqual(BankCard1#customer_BankCard.id, BankCard2#customer_BankCard.id),
+    ok.
+
 remove_bank_card_test(Config) ->
     Client = ?config(client, Config),
     {ok, Customer} = cs_client:create_customer(
@@ -166,16 +209,16 @@ remove_bank_card_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
+    CustomerID = Customer#customer_Customer.id,
     {ok, BankCard} = cs_client:add_bank_card(
-        CustomerId,
+        CustomerID,
         #customer_BankCardParams{
             bank_card_token = <<"token-2">>
         },
         Client
     ),
-    {ok, ok} = cs_client:remove_bank_card(CustomerId, BankCard#customer_BankCard.id, Client),
-    {ok, State} = cs_client:get_customer(CustomerId, Client),
+    {ok, ok} = cs_client:remove_bank_card(CustomerID, BankCard#customer_BankCard.id, Client),
+    {ok, State} = cs_client:get_customer(CustomerID, Client),
     ?assertEqual([], State#customer_CustomerState.bank_card_refs),
     ok.
 
@@ -187,9 +230,9 @@ add_payment_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, ok} = cs_client:add_payment(CustomerId, <<"invoice-1">>, <<"payment-1">>, Client),
-    {ok, State} = cs_client:get_customer(CustomerId, Client),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, ok} = cs_client:add_payment(CustomerID, <<"invoice-1">>, <<"payment-1">>, Client),
+    {ok, State} = cs_client:get_customer(CustomerID, Client),
     ?assertEqual(1, length(State#customer_CustomerState.payment_refs)),
     ok.
 
@@ -201,10 +244,10 @@ get_payments_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, ok} = cs_client:add_payment(CustomerId, <<"inv-1">>, <<"pay-1">>, Client),
-    {ok, ok} = cs_client:add_payment(CustomerId, <<"inv-2">>, <<"pay-2">>, Client),
-    {ok, Response} = cs_client:get_payments(CustomerId, 10, undefined, Client),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, ok} = cs_client:add_payment(CustomerID, <<"inv-1">>, <<"pay-1">>, Client),
+    {ok, ok} = cs_client:add_payment(CustomerID, <<"inv-2">>, <<"pay-2">>, Client),
+    {ok, Response} = cs_client:get_payments(CustomerID, 10, undefined, Client),
     ?assertEqual(2, length(Response#customer_CustomerPaymentsResponse.payments)),
     ok.
 
@@ -216,30 +259,30 @@ get_payments_pagination_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
+    CustomerID = Customer#customer_Customer.id,
     %% Add 5 payments
     lists:foreach(
         fun(N) ->
             InvId = <<"inv-pag-", (integer_to_binary(N))/binary>>,
             PayId = <<"pay-pag-", (integer_to_binary(N))/binary>>,
-            {ok, ok} = cs_client:add_payment(CustomerId, InvId, PayId, Client)
+            {ok, ok} = cs_client:add_payment(CustomerID, InvId, PayId, Client)
         end,
         lists:seq(1, 5)
     ),
     %% Get first page (limit 2)
-    {ok, Response1} = cs_client:get_payments(CustomerId, 2, undefined, Client),
+    {ok, Response1} = cs_client:get_payments(CustomerID, 2, undefined, Client),
     Payments1 = Response1#customer_CustomerPaymentsResponse.payments,
     Token1 = Response1#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(2, length(Payments1)),
     ?assertNotEqual(undefined, Token1),
     %% Get second page
-    {ok, Response2} = cs_client:get_payments(CustomerId, 2, Token1, Client),
+    {ok, Response2} = cs_client:get_payments(CustomerID, 2, Token1, Client),
     Payments2 = Response2#customer_CustomerPaymentsResponse.payments,
     Token2 = Response2#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(2, length(Payments2)),
     ?assertNotEqual(undefined, Token2),
     %% Get third page (only 1 remaining)
-    {ok, Response3} = cs_client:get_payments(CustomerId, 2, Token2, Client),
+    {ok, Response3} = cs_client:get_payments(CustomerID, 2, Token2, Client),
     Payments3 = Response3#customer_CustomerPaymentsResponse.payments,
     Token3 = Response3#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(1, length(Payments3)),
@@ -254,10 +297,10 @@ get_bank_cards_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, _} = cs_client:add_bank_card(CustomerId, #customer_BankCardParams{bank_card_token = <<"token-a">>}, Client),
-    {ok, _} = cs_client:add_bank_card(CustomerId, #customer_BankCardParams{bank_card_token = <<"token-b">>}, Client),
-    {ok, Response} = cs_client:get_bank_cards(CustomerId, 10, undefined, Client),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, _} = cs_client:add_bank_card(CustomerID, #customer_BankCardParams{bank_card_token = <<"token-a">>}, Client),
+    {ok, _} = cs_client:add_bank_card(CustomerID, #customer_BankCardParams{bank_card_token = <<"token-b">>}, Client),
+    {ok, Response} = cs_client:get_bank_cards(CustomerID, 10, undefined, Client),
     ?assertEqual(2, length(Response#customer_CustomerBankCardsResponse.bank_cards)),
     ok.
 
@@ -269,29 +312,29 @@ get_bank_cards_pagination_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
+    CustomerID = Customer#customer_Customer.id,
     %% Add 5 bank cards
     lists:foreach(
         fun(N) ->
             Token = <<"token-pag-", (integer_to_binary(N))/binary>>,
-            {ok, _} = cs_client:add_bank_card(CustomerId, #customer_BankCardParams{bank_card_token = Token}, Client)
+            {ok, _} = cs_client:add_bank_card(CustomerID, #customer_BankCardParams{bank_card_token = Token}, Client)
         end,
         lists:seq(1, 5)
     ),
     %% Get first page (limit 2)
-    {ok, Response1} = cs_client:get_bank_cards(CustomerId, 2, undefined, Client),
+    {ok, Response1} = cs_client:get_bank_cards(CustomerID, 2, undefined, Client),
     Cards1 = Response1#customer_CustomerBankCardsResponse.bank_cards,
     Token1 = Response1#customer_CustomerBankCardsResponse.continuation_token,
     ?assertEqual(2, length(Cards1)),
     ?assertNotEqual(undefined, Token1),
     %% Get second page
-    {ok, Response2} = cs_client:get_bank_cards(CustomerId, 2, Token1, Client),
+    {ok, Response2} = cs_client:get_bank_cards(CustomerID, 2, Token1, Client),
     Cards2 = Response2#customer_CustomerBankCardsResponse.bank_cards,
     Token2 = Response2#customer_CustomerBankCardsResponse.continuation_token,
     ?assertEqual(2, length(Cards2)),
     ?assertNotEqual(undefined, Token2),
     %% Get third page (only 1 remaining)
-    {ok, Response3} = cs_client:get_bank_cards(CustomerId, 2, Token2, Client),
+    {ok, Response3} = cs_client:get_bank_cards(CustomerID, 2, Token2, Client),
     Cards3 = Response3#customer_CustomerBankCardsResponse.bank_cards,
     Token3 = Response3#customer_CustomerBankCardsResponse.continuation_token,
     ?assertEqual(1, length(Cards3)),
@@ -306,10 +349,50 @@ get_by_parent_payment_test(Config) ->
         },
         Client
     ),
-    CustomerId = Customer#customer_Customer.id,
-    {ok, ok} = cs_client:add_payment(CustomerId, <<"invoice-parent">>, <<"payment-parent">>, Client),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, ok} = cs_client:add_payment(CustomerID, <<"invoice-parent">>, <<"payment-parent">>, Client),
     {ok, State} = cs_client:get_customer_by_parent_payment(<<"invoice-parent">>, <<"payment-parent">>, Client),
-    ?assertEqual(CustomerId, State#customer_CustomerState.customer#customer_Customer.id),
+    ?assertEqual(CustomerID, State#customer_CustomerState.customer#customer_Customer.id),
+    ok.
+
+get_by_external_id_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-id">>},
+    ExternalID = <<"ext-lookup-1">>,
+    {ok, Customer} = cs_client:create_customer(
+        #customer_CustomerParams{
+            party_ref = PartyRef,
+            external_id = ExternalID
+        },
+        Client
+    ),
+    CustomerID = Customer#customer_Customer.id,
+    {ok, State} = cs_client:get_customer_by_external_id(ExternalID, PartyRef, Client),
+    ?assertEqual(CustomerID, State#customer_CustomerState.customer#customer_Customer.id),
+    ?assertEqual(ExternalID, State#customer_CustomerState.customer#customer_Customer.external_id),
+    ok.
+
+get_by_external_id_not_found_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-id-missing">>},
+    {exception, #customer_CustomerNotFound{}} =
+        cs_client:get_customer_by_external_id(<<"nonexistent">>, PartyRef, Client),
+    ok.
+
+create_customer_external_id_conflict_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-ext-conflict">>},
+    ExternalID = <<"ext-conflict-1">>,
+    Params = #customer_CustomerParams{
+        party_ref = PartyRef,
+        external_id = ExternalID
+    },
+    {ok, Customer} = cs_client:create_customer(Params, Client),
+    CustomerID = Customer#customer_Customer.id,
+    %% Creating another customer with the same external_id and party should conflict
+    {exception, #customer_CustomerAlreadyExists{id = ConflictID}} =
+        cs_client:create_customer(Params, Client),
+    ?assertEqual(CustomerID, ConflictID),
     ok.
 
 %% Bank Card Storage Tests
