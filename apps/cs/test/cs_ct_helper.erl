@@ -64,7 +64,7 @@ start_app(epg_connector = AppName) ->
         start_app(AppName, [
             {databases, #{
                 cs => #{
-                    host => "cs_db",
+                    host => os:getenv("POSTGRES_HOST", "cs_db"),
                     port => 5432,
                     username => "postgres",
                     password => "postgres",
