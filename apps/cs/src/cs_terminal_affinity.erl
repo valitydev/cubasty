@@ -98,36 +98,34 @@ release_by_terminal(#customer_ProviderTerminalKey{} = Key, Reason) ->
 
 %% Internal functions
 
+%% Every ttl variant names the moment an affinity expires; here it is turned into
+%% what the database layer compares: a cutoff for a base column, or a verdict that
+%% the active affinity is already expired regardless of its bases.
 -spec ttl_to_cutoff(ttl()) -> {ok, cutoff()} | {error, invalid_request}.
 ttl_to_cutoff(undefined) ->
     {ok, undefined};
-ttl_to_cutoff({Base, Timer}) when Base =:= since_bound; Base =:= since_last_use ->
-    case timer_to_timestamp(Timer) of
-        {ok, Timestamp} -> {ok, {Base, Timestamp}};
-        {error, _} = Error -> Error
-    end;
-ttl_to_cutoff(_Ttl) ->
-    {error, invalid_request}.
-
--spec timer_to_timestamp(dmsl_base_thrift:'Timer'()) -> {ok, binary()} | {error, invalid_request}.
-timer_to_timestamp({timeout, Timeout}) when is_integer(Timeout), Timeout >= 0 ->
+ttl_to_cutoff({Base, Timeout}) when
+    (Base =:= since_bound orelse Base =:= since_last_use), is_integer(Timeout), Timeout >= 0
+->
     Cutoff = erlang:system_time(second) - Timeout,
-    {ok, list_to_binary(calendar:system_time_to_rfc3339(Cutoff, [{offset, "Z"}]))};
-timer_to_timestamp({deadline, Deadline}) when is_binary(Deadline) ->
+    {ok, {Base, list_to_binary(calendar:system_time_to_rfc3339(Cutoff, [{offset, "Z"}]))}};
+ttl_to_cutoff({deadline, Deadline}) when is_binary(Deadline) ->
     %% Parsed here rather than left to the PostgreSQL timestamptz parser: the latter
     %% turns a malformed deadline into a transaction error (a system error to the
     %% caller instead of the declared InvalidRequest) and silently accepts the special
     %% values 'now' / 'infinity' / 'yesterday', which would expire every affinity.
-    %% Reformatting with an explicit offset also keeps the cutoff independent of the
-    %% session TimeZone, which an offsetless timestamp would otherwise depend on.
+    %% An absolute deadline is indifferent to bound_at / last_used_at: once it has
+    %% passed, the active affinity is expired, whatever its bases say.
     try calendar:rfc3339_to_system_time(binary_to_list(Deadline), [{unit, microsecond}]) of
         Micro ->
-            Formatted = calendar:system_time_to_rfc3339(Micro, [{unit, microsecond}, {offset, "Z"}]),
-            {ok, list_to_binary(Formatted)}
+            case Micro =< erlang:system_time(microsecond) of
+                true -> {ok, expired};
+                false -> {ok, undefined}
+            end
     catch
         _:_ -> {error, invalid_request}
     end;
-timer_to_timestamp(_Timer) ->
+ttl_to_cutoff(_Ttl) ->
     {error, invalid_request}.
 
 -spec key_to_json(provider_terminal_key()) -> {binary(), binary()}.

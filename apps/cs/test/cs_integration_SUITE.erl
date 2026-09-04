@@ -58,7 +58,6 @@
     bind_terminal_affinity_ttl_since_bound_test/1,
     bind_terminal_affinity_ttl_since_last_use_test/1,
     bind_terminal_affinity_ttl_since_last_use_expires_test/1,
-    bind_terminal_affinity_ttl_since_last_use_deadline_test/1,
     bind_terminal_affinity_ttl_deadline_test/1,
     bind_terminal_affinity_invalid_ttl_test/1,
     release_terminal_affinity_test/1,
@@ -110,7 +109,6 @@ groups() ->
             bind_terminal_affinity_ttl_since_bound_test,
             bind_terminal_affinity_ttl_since_last_use_test,
             bind_terminal_affinity_ttl_since_last_use_expires_test,
-            bind_terminal_affinity_ttl_since_last_use_deadline_test,
             bind_terminal_affinity_ttl_deadline_test,
             bind_terminal_affinity_invalid_ttl_test,
             release_terminal_affinity_test,
@@ -606,7 +604,7 @@ bind_terminal_affinity_ttl_since_bound_test(Config) ->
     CustomerID = create_affinity_customer(<<"party-affinity-ttl-bound">>, Client),
     {ok, First} = bind_affinity(CustomerID, 2, 20, undefined, Client),
     1 = backdate_affinities(CustomerID, ?TEN_DAYS, ?TEN_DAYS),
-    {ok, Second} = bind_affinity(CustomerID, 2, 20, {since_bound, {timeout, 86400}}, Client),
+    {ok, Second} = bind_affinity(CustomerID, 2, 20, {since_bound, 86400}, Client),
     ?assert(Second#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
     ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
     {ok, [Live]} = cs_client:get_terminal_affinities(CustomerID, Client),
@@ -619,11 +617,11 @@ bind_terminal_affinity_ttl_since_last_use_test(Config) ->
     CustomerID = create_affinity_customer(<<"party-affinity-ttl-last-use">>, Client),
     {ok, First} = bind_affinity(CustomerID, 2, 21, undefined, Client),
     1 = backdate_affinities(CustomerID, ?TEN_DAYS, 0),
-    {ok, Second} = bind_affinity(CustomerID, 2, 21, {since_last_use, {timeout, 86400}}, Client),
+    {ok, Second} = bind_affinity(CustomerID, 2, 21, {since_last_use, 86400}, Client),
     ?assertEqual(First#customer_TerminalAffinity.bind_seq, Second#customer_TerminalAffinity.bind_seq),
     ?assertEqual([], released_affinities(CustomerID)),
     %% bound_at is still stale, so the hard TTL does expire the very same row
-    {ok, Third} = bind_affinity(CustomerID, 2, 21, {since_bound, {timeout, 86400}}, Client),
+    {ok, Third} = bind_affinity(CustomerID, 2, 21, {since_bound, 86400}, Client),
     ?assert(Third#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
     ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
     ok.
@@ -635,23 +633,8 @@ bind_terminal_affinity_ttl_since_last_use_expires_test(Config) ->
     {ok, First} = bind_affinity(CustomerID, 2, 23, undefined, Client),
     %% bound_at stays fresh, so only the sliding base is stale
     1 = backdate_affinities(CustomerID, 0, ?TEN_DAYS),
-    {ok, Second} = bind_affinity(CustomerID, 2, 23, {since_last_use, {timeout, 86400}}, Client),
+    {ok, Second} = bind_affinity(CustomerID, 2, 23, {since_last_use, 86400}, Client),
     ?assert(Second#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
-    ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
-    ok.
-
-%% The remaining kind x form combination: sliding base against an absolute cutoff
-bind_terminal_affinity_ttl_since_last_use_deadline_test(Config) ->
-    Client = ?config(client, Config),
-    CustomerID = create_affinity_customer(<<"party-affinity-ttl-last-use-deadline">>, Client),
-    {ok, First} = bind_affinity(CustomerID, 2, 24, undefined, Client),
-    Past = {since_last_use, {deadline, <<"2000-01-01T00:00:00Z">>}},
-    {ok, Second} = bind_affinity(CustomerID, 2, 24, Past, Client),
-    ?assertEqual(First#customer_TerminalAffinity.bind_seq, Second#customer_TerminalAffinity.bind_seq),
-    ?assertEqual([], released_affinities(CustomerID)),
-    Future = {since_last_use, {deadline, <<"2100-01-01T00:00:00Z">>}},
-    {ok, Third} = bind_affinity(CustomerID, 2, 24, Future, Client),
-    ?assert(Third#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
     ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
     ok.
 
@@ -664,30 +647,33 @@ bind_terminal_affinity_invalid_ttl_test(Config) ->
     lists:foreach(
         fun(Deadline) ->
             {exception, #base_InvalidRequest{}} =
-                bind_affinity(CustomerID, 2, 25, {since_bound, {deadline, Deadline}}, Client)
+                bind_affinity(CustomerID, 2, 25, {deadline, Deadline}, Client)
         end,
         %% The last one is a timestamp without an offset: its meaning would depend on
         %% the session TimeZone rather than on what the caller sent
         [<<"not-a-timestamp">>, <<"now">>, <<"infinity">>, <<"yesterday">>, <<"2026-01-01T00:00:00">>]
     ),
-    {exception, #base_InvalidRequest{}} = bind_affinity(CustomerID, 2, 25, {since_bound, {timeout, -5}}, Client),
+    {exception, #base_InvalidRequest{}} = bind_affinity(CustomerID, 2, 25, {since_bound, -5}, Client),
+    {exception, #base_InvalidRequest{}} = bind_affinity(CustomerID, 2, 25, {since_last_use, -5}, Client),
     %% Nothing was released and nothing was rebound
     ?assertEqual([], released_affinities(CustomerID)),
     {ok, [Live]} = cs_client:get_terminal_affinities(CustomerID, Client),
     ?assertEqual(First#customer_TerminalAffinity.bind_seq, Live#customer_TerminalAffinity.bind_seq),
     ok.
 
-%% Deadline form: the base is compared against an absolute cutoff
+%% An absolute deadline expires the affinity once passed, however fresh its bases are;
+%% until then it is inert
 bind_terminal_affinity_ttl_deadline_test(Config) ->
     Client = ?config(client, Config),
     CustomerID = create_affinity_customer(<<"party-affinity-ttl-deadline">>, Client),
     {ok, First} = bind_affinity(CustomerID, 2, 22, undefined, Client),
-    Past = {since_bound, {deadline, <<"2000-01-01T00:00:00Z">>}},
-    {ok, Second} = bind_affinity(CustomerID, 2, 22, Past, Client),
+    Future = {deadline, <<"2100-01-01T00:00:00Z">>},
+    {ok, Second} = bind_affinity(CustomerID, 2, 22, Future, Client),
     ?assertEqual(First#customer_TerminalAffinity.bind_seq, Second#customer_TerminalAffinity.bind_seq),
     ?assertEqual([], released_affinities(CustomerID)),
-    Future = {since_bound, {deadline, <<"2100-01-01T00:00:00Z">>}},
-    {ok, Third} = bind_affinity(CustomerID, 2, 22, Future, Client),
+    %% Nothing is backdated: the row is seconds old and still gets expired
+    Past = {deadline, <<"2000-01-01T00:00:00Z">>},
+    {ok, Third} = bind_affinity(CustomerID, 2, 22, Past, Client),
     ?assert(Third#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
     ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
     ok.

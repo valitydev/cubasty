@@ -19,8 +19,10 @@
     bound_at := term(),
     last_used_at := term()
 }.
-%% Expiration base and the cutoff it is compared against; `undefined' means no ttl.
--type cutoff() :: undefined | {since_bound | since_last_use, binary()}.
+%% What bind/4 releases before writing: nothing, the active affinity whatever its
+%% bases (an absolute deadline has passed), or the one whose base column precedes
+%% the cutoff timestamp.
+-type cutoff() :: undefined | expired | {since_bound | since_last_use, binary()}.
 
 -export_type([customer_id/0, affinity/0, cutoff/0]).
 
@@ -105,6 +107,19 @@ release_by_terminal(ProviderRef, TerminalRef, Reason) ->
 
 release_expired(_Conn, _CustomerID, _ProviderRef, _TerminalRef, undefined) ->
     ok;
+release_expired(Conn, CustomerID, ProviderRef, TerminalRef, expired) ->
+    Query = """
+    UPDATE terminal_affinity
+    SET released_at = NOW(), released_reason = 'expired'
+    WHERE customer_id = $1::uuid
+      AND provider_ref = $2
+      AND terminal_ref = $3
+      AND released_at IS NULL
+    """,
+    case epg_pool:query(Conn, Query, [CustomerID, ProviderRef, TerminalRef]) of
+        {ok, _} -> ok;
+        {error, Reason} -> rollback(Reason)
+    end;
 release_expired(Conn, CustomerID, ProviderRef, TerminalRef, {Base, CutoffAt}) ->
     Query = """
     UPDATE terminal_affinity
