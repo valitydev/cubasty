@@ -1,6 +1,7 @@
 -module(cs_customer_handler).
 
 -include_lib("damsel/include/dmsl_customer_thrift.hrl").
+-include_lib("damsel/include/dmsl_base_thrift.hrl").
 
 -export([handle_function/4]).
 
@@ -18,9 +19,10 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
         party_ref = PartyRef,
         contact_info = ContactInfo,
         metadata = Metadata,
-        external_id = ExternalID
+        external_id = ExternalID,
+        email = Email
     } = Params,
-    case cs_customer:create(PartyRef, ContactInfo, Metadata, ExternalID) of
+    case cs_customer:create(PartyRef, ContactInfo, Metadata, ExternalID, Email) of
         {ok, CustomerID} ->
             {ok, CustomerState} = cs_customer:get_state(CustomerID),
             {ok, cs_mapper:customer_to_thrift(maps:get(customer, CustomerState))};
@@ -28,6 +30,12 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
             woody_error:raise(business, #customer_CustomerAlreadyExists{
                 id = get_existing_customer_id(ExternalID, PartyRef)
             });
+        {error, email_conflict} ->
+            woody_error:raise(business, #customer_CustomerEmailConflict{
+                id = get_existing_customer_id_by_email(PartyRef, Email)
+            });
+        {error, invalid_email} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid email">>]});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
@@ -161,6 +169,71 @@ do_handle_function('GetBankCards', {CustomerID, Limit, ContinuationToken}, _Cont
             woody_error:raise(business, #customer_CustomerNotFound{});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('FindOrCreateByEmail', {PartyRef, Email}, _Context, _Options) ->
+    case cs_customer:find_or_create_by_email(PartyRef, Email) of
+        {ok, Customer} ->
+            {ok, cs_mapper:customer_to_thrift(Customer)};
+        {error, invalid_email} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid email">>]});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetByEmail', {PartyRef, Email}, _Context, _Options) ->
+    case cs_customer:get_by_email(PartyRef, Email) of
+        {ok, State} ->
+            {ok, cs_mapper:customer_state_to_thrift(State)};
+        {error, Reason} when Reason =:= not_found; Reason =:= invalid_email ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetTerminalAffinities', {CustomerID}, _Context, _Options) ->
+    case cs_terminal_affinity:list(CustomerID) of
+        {ok, Affinities} ->
+            {ok, [cs_mapper:terminal_affinity_to_thrift(A) || A <- Affinities]};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('BindTerminalAffinity', {Params}, _Context, _Options) ->
+    #customer_TerminalAffinityParams{
+        customer_id = CustomerID,
+        provider_ref = ProviderRef,
+        terminal_ref = TerminalRef,
+        ttl = Ttl
+    } = Params,
+    case cs_terminal_affinity:bind(CustomerID, ProviderRef, TerminalRef, Ttl) of
+        {ok, Affinity} ->
+            {ok, cs_mapper:terminal_affinity_to_thrift(Affinity)};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, invalid_request} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid ttl">>]});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('ReleaseTerminalAffinity', {Params}, _Context, _Options) ->
+    #customer_ReleaseTerminalAffinityParams{
+        customer_id = CustomerID,
+        key = Key,
+        reason = Reason
+    } = Params,
+    case cs_terminal_affinity:release(CustomerID, Key, Reason) of
+        ok ->
+            {ok, ok};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, Error} ->
+            woody_error:raise(system, {internal, Error})
+    end;
+do_handle_function('ReleaseTerminalAffinitiesByTerminal', {Key, Reason}, _Context, _Options) ->
+    case cs_terminal_affinity:release_by_terminal(Key, Reason) of
+        ok ->
+            {ok, ok};
+        {error, Error} ->
+            woody_error:raise(system, {internal, Error})
     end.
 
 %% Internal functions
@@ -173,6 +246,12 @@ get_existing_customer_id(ExternalID, PartyRef) ->
     case cs_customer:get_by_external_id(ExternalID, PartyRef) of
         {ok, #{customer := Customer}} -> maps:get(id, Customer);
         {error, not_found} -> undefined
+    end.
+
+get_existing_customer_id_by_email(PartyRef, Email) ->
+    case cs_customer:get_by_email(PartyRef, Email) of
+        {ok, #{customer := Customer}} -> maps:get(id, Customer);
+        {error, _} -> undefined
     end.
 
 get_bank_card_info(BankCardId) ->

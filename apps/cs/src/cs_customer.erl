@@ -1,11 +1,14 @@
 -module(cs_customer).
 
 -export([
-    create/4,
+    create/5,
     get/1,
     get_state/1,
     get_by_external_id/2,
+    get_by_email/2,
     get_by_payment/2,
+    find_or_create_by_email/2,
+    normalize_email/1,
     delete/1,
     add_bank_card/2,
     remove_bank_card/2,
@@ -15,7 +18,12 @@
 ]).
 
 -export_type([customer_id/0, bank_card_id/0, party_ref/0, contact_info/0, metadata/0]).
--export_type([customer/0, customer_state/0, payment_ref/0]).
+-export_type([customer/0, customer_state/0, payment_ref/0, email/0]).
+
+%% Reason recorded on affinities released together with the customer
+-define(DELETED_REASON, <<"customer_deleted">>).
+%% Longest address an SMTP envelope may carry (RFC 5321)
+-define(MAX_EMAIL_SIZE, 320).
 
 %% Types
 -type customer_id() :: binary().
@@ -23,6 +31,7 @@
 -type party_ref() :: dmsl_domain_thrift:'PartyConfigRef'().
 -type contact_info() :: dmsl_domain_thrift:'ContactInfo'() | undefined.
 -type metadata() :: dmsl_domain_thrift:'Metadata'() | undefined.
+-type email() :: binary().
 
 -type customer() :: #{
     id := customer_id(),
@@ -31,7 +40,8 @@
     metadata => metadata(),
     created_at := binary(),
     deleted_at => binary() | undefined,
-    external_id => binary() | undefined
+    external_id => binary() | undefined,
+    email => email() | undefined
 }.
 -type customer_state() :: #{
     customer := customer(),
@@ -46,11 +56,18 @@
 
 %% API
 
--spec create(party_ref(), contact_info(), metadata(), binary() | undefined) ->
-    {ok, customer_id()} | {error, term()}.
-create(PartyRef, ContactInfo, Metadata, ExternalID) ->
-    PartyRefJson = party_ref_to_json(PartyRef),
-    cs_customer_database:create(PartyRefJson, ContactInfo, Metadata, ExternalID).
+-spec create(party_ref(), contact_info(), metadata(), binary() | undefined, email() | undefined) ->
+    {ok, customer_id()} | {error, external_id_conflict | email_conflict | invalid_email | term()}.
+create(PartyRef, ContactInfo, Metadata, ExternalID, Email) ->
+    case maybe_normalize_email(Email) of
+        {ok, NormalizedEmail} ->
+            PartyRefJson = party_ref_to_json(PartyRef),
+            cs_customer_database:create(
+                PartyRefJson, ContactInfo, Metadata, ExternalID, NormalizedEmail
+            );
+        {error, _} = Error ->
+            Error
+    end.
 
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
 get(CustomerID) ->
@@ -95,6 +112,33 @@ get_by_external_id(ExternalID, PartyRef) ->
             Error
     end.
 
+-spec get_by_email(party_ref(), email()) ->
+    {ok, customer_state()} | {error, not_found | invalid_email | term()}.
+get_by_email(PartyRef, Email) ->
+    case normalize_email(Email) of
+        {ok, NormalizedEmail} ->
+            PartyRefJson = party_ref_to_json(PartyRef),
+            case cs_customer_database:get_by_email(NormalizedEmail, PartyRefJson) of
+                {ok, Customer} ->
+                    get_state(maps:get(id, Customer));
+                Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+-spec find_or_create_by_email(party_ref(), email()) ->
+    {ok, customer()} | {error, invalid_email | term()}.
+find_or_create_by_email(PartyRef, Email) ->
+    case normalize_email(Email) of
+        {ok, NormalizedEmail} ->
+            PartyRefJson = party_ref_to_json(PartyRef),
+            cs_customer_database:find_or_create_by_email(PartyRefJson, NormalizedEmail);
+        {error, _} = Error ->
+            Error
+    end.
+
 -spec get_by_payment(binary(), binary()) ->
     {ok, customer_state()} | {error, not_found | invalid_recurrent_parent | term()}.
 get_by_payment(InvoiceId, PaymentId) ->
@@ -108,9 +152,28 @@ get_by_payment(InvoiceId, PaymentId) ->
             Error
     end.
 
+-spec normalize_email(email()) -> {ok, email()} | {error, invalid_email}.
+normalize_email(Email) when is_binary(Email) ->
+    try unicode:characters_to_binary(string:trim(string:lowercase(Email))) of
+        Normalized when is_binary(Normalized) -> validate_email(Normalized);
+        _ -> {error, invalid_email}
+    catch
+        %% string:lowercase/1 fails with badarg on malformed UTF-8
+        _:_ -> {error, invalid_email}
+    end;
+normalize_email(_Email) ->
+    {error, invalid_email}.
+
 -spec delete(customer_id()) -> ok | {error, not_found | term()}.
 delete(CustomerID) ->
-    cs_customer_database:delete(CustomerID).
+    case cs_customer_database:delete(CustomerID) of
+        ok ->
+            %% Orphan affinities would outlive the customer and the freed email
+            _ = release_terminal_affinities(CustomerID),
+            ok;
+        Error ->
+            Error
+    end.
 
 -spec add_bank_card(customer_id(), bank_card_id()) -> ok | {error, customer_not_found | term()}.
 add_bank_card(CustomerID, BankCardId) ->
@@ -156,6 +219,45 @@ get_payments(CustomerID, Limit, Offset) ->
     end.
 
 %% Internal functions
+
+-spec maybe_normalize_email(email() | undefined) -> {ok, email() | undefined} | {error, invalid_email}.
+maybe_normalize_email(undefined) -> {ok, undefined};
+maybe_normalize_email(Email) -> normalize_email(Email).
+
+-spec validate_email(binary()) -> {ok, email()} | {error, invalid_email}.
+validate_email(<<>>) ->
+    {error, invalid_email};
+%% Beyond the RFC 5321 envelope limit the value is not an address, and it also stops
+%% fitting into idx_customer_email_party (btree rejects entries over ~2704 bytes)
+validate_email(Email) when byte_size(Email) > ?MAX_EMAIL_SIZE ->
+    {error, invalid_email};
+validate_email(Email) ->
+    case binary:match(Email, <<"@">>) of
+        nomatch -> {error, invalid_email};
+        _ -> validate_email_charset(Email)
+    end.
+
+%% Control characters never belong in an address, and a NUL byte cannot be stored in a
+%% text column at all, so PostgreSQL would answer with an error instead of a conflict
+-spec validate_email_charset(binary()) -> {ok, email()} | {error, invalid_email}.
+validate_email_charset(Email) ->
+    ControlChars = [<<Char>> || Char <- lists:seq(0, 31)] ++ [<<127>>],
+    case binary:match(Email, ControlChars) of
+        nomatch -> {ok, Email};
+        _ -> {error, invalid_email}
+    end.
+
+-spec release_terminal_affinities(customer_id()) -> ok.
+release_terminal_affinities(CustomerID) ->
+    case cs_terminal_affinity:release_by_customer(CustomerID, ?DELETED_REASON) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            logger:warning("failed to release terminal affinities of customer ~s: ~p", [
+                CustomerID, Reason
+            ]),
+            ok
+    end.
 
 -spec make_continuation_token(non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
     binary() | undefined.
