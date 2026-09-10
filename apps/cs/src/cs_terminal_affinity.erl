@@ -4,7 +4,7 @@
 
 -export([
     list/1,
-    bind/4,
+    bind/5,
     release/3,
     release_by_customer/2,
     release_by_terminal/2
@@ -18,7 +18,8 @@
     terminal_ref/0,
     provider_terminal_key/0,
     reason/0,
-    ttl/0
+    ttl/0,
+    payment_ref/0
 ]).
 
 %% Types
@@ -28,6 +29,7 @@
 -type provider_terminal_key() :: dmsl_customer_thrift:'ProviderTerminalKey'().
 -type ttl() :: dmsl_domain_thrift:'RoutingAffinityTtl'() | undefined.
 -type reason() :: binary() | undefined.
+-type payment_ref() :: dmsl_customer_thrift:'PaymentRef'().
 
 -type affinity() :: cs_terminal_affinity_database:affinity().
 %% Expiration base and the timestamp an affinity is expired when its base precedes
@@ -44,20 +46,14 @@ list(CustomerID) ->
             Error
     end.
 
--spec bind(customer_id(), provider_ref(), terminal_ref(), ttl()) ->
-    {ok, affinity()} | {error, not_found | invalid_request | term()}.
-bind(CustomerID, ProviderRef, TerminalRef, Ttl) ->
-    case ttl_to_cutoff(Ttl) of
-        {ok, Cutoff} ->
-            case cs_customer:get(CustomerID) of
-                {ok, _Customer} ->
-                    {ProviderRefJson, TerminalRefJson} = refs_to_json(ProviderRef, TerminalRef),
-                    cs_terminal_affinity_database:bind(
-                        CustomerID, ProviderRefJson, TerminalRefJson, Cutoff
-                    );
-                Error ->
-                    Error
-            end;
+%% The payment is both the idempotency key of the bind and the payment remembered for
+%% the Customer; the database layer does the two in one transaction.
+-spec bind(customer_id(), provider_ref(), terminal_ref(), ttl(), payment_ref()) ->
+    {ok, affinity()} | {error, not_found | invalid_request | invalid_payment | term()}.
+bind(CustomerID, ProviderRef, TerminalRef, Ttl, Payment) ->
+    case payment_to_map(Payment) of
+        {ok, PaymentMap} ->
+            do_bind(CustomerID, ProviderRef, TerminalRef, Ttl, PaymentMap);
         {error, _} = Error ->
             Error
     end.
@@ -98,6 +94,35 @@ release_by_terminal(#customer_ProviderTerminalKey{} = Key, Reason) ->
 
 %% Internal functions
 
+-spec do_bind(
+    customer_id(), provider_ref(), terminal_ref(), ttl(), cs_terminal_affinity_database:payment_ref()
+) ->
+    {ok, affinity()} | {error, not_found | invalid_request | term()}.
+do_bind(CustomerID, ProviderRef, TerminalRef, Ttl, PaymentMap) ->
+    case ttl_to_cutoff(Ttl) of
+        {ok, Cutoff} ->
+            %% The bind transaction checks that the Customer exists itself: a check from
+            %% here, outside it, drifts apart from the write under a concurrent delete
+            {ProviderRefJson, TerminalRefJson} = refs_to_json(ProviderRef, TerminalRef),
+            cs_terminal_affinity_database:bind(
+                CustomerID, ProviderRefJson, TerminalRefJson, Cutoff, PaymentMap
+            );
+        {error, _} = Error ->
+            Error
+    end.
+
+%% Both halves are required by the schema, but a caller that skips strict validation can
+%% still send an empty or absent one; NULL invoice_id would silently defeat the
+%% idempotency check (NULL = NULL is never true), so it is rejected here instead.
+-spec payment_to_map(payment_ref()) ->
+    {ok, cs_terminal_affinity_database:payment_ref()} | {error, invalid_payment}.
+payment_to_map(#customer_PaymentRef{invoice_id = InvoiceID, payment_id = PaymentID}) when
+    is_binary(InvoiceID), InvoiceID =/= <<>>, is_binary(PaymentID), PaymentID =/= <<>>
+->
+    {ok, #{invoice_id => InvoiceID, payment_id => PaymentID}};
+payment_to_map(_Payment) ->
+    {error, invalid_payment}.
+
 %% Every ttl variant names the moment an affinity expires; here it is turned into
 %% what the database layer compares: a cutoff for a base column, or a verdict that
 %% the active affinity is already expired regardless of its bases.
@@ -107,8 +132,12 @@ ttl_to_cutoff(undefined) ->
 ttl_to_cutoff({Base, Timeout}) when
     (Base =:= since_bound orelse Base =:= since_last_use), is_integer(Timeout), Timeout >= 0
 ->
-    Cutoff = erlang:system_time(second) - Timeout,
-    {ok, {Base, list_to_binary(calendar:system_time_to_rfc3339(Cutoff, [{offset, "Z"}]))}};
+    %% Microseconds rather than seconds: hellgate decides whether a binding is live in
+    %% milliseconds, and rounding the cutoff to a second would extend its life on this
+    %% side of the call.
+    Cutoff = erlang:system_time(microsecond) - Timeout * 1000000,
+    Formatted = calendar:system_time_to_rfc3339(Cutoff, [{unit, microsecond}, {offset, "Z"}]),
+    {ok, {Base, list_to_binary(Formatted)}};
 ttl_to_cutoff({deadline, Deadline}) when is_binary(Deadline) ->
     %% Parsed here rather than left to the PostgreSQL timestamptz parser: the latter
     %% turns a malformed deadline into a transaction error (a system error to the

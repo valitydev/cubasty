@@ -55,6 +55,13 @@
     terminal_affinities_customer_not_found_test/1,
     bind_terminal_affinity_test/1,
     bind_terminal_affinity_idempotent_test/1,
+    bind_terminal_affinity_same_payment_test/1,
+    bind_terminal_affinity_expired_same_payment_test/1,
+    bind_terminal_affinity_expired_new_payment_test/1,
+    bind_terminal_affinity_records_payment_test/1,
+    bind_terminal_affinity_stale_payment_test/1,
+    bind_terminal_affinity_released_payment_test/1,
+    bind_terminal_affinity_after_add_payment_test/1,
     bind_terminal_affinity_ttl_since_bound_test/1,
     bind_terminal_affinity_ttl_since_last_use_test/1,
     bind_terminal_affinity_ttl_since_last_use_expires_test/1,
@@ -106,6 +113,13 @@ groups() ->
             terminal_affinities_customer_not_found_test,
             bind_terminal_affinity_test,
             bind_terminal_affinity_idempotent_test,
+            bind_terminal_affinity_same_payment_test,
+            bind_terminal_affinity_expired_same_payment_test,
+            bind_terminal_affinity_expired_new_payment_test,
+            bind_terminal_affinity_records_payment_test,
+            bind_terminal_affinity_stale_payment_test,
+            bind_terminal_affinity_released_payment_test,
+            bind_terminal_affinity_after_add_payment_test,
             bind_terminal_affinity_ttl_since_bound_test,
             bind_terminal_affinity_ttl_since_last_use_test,
             bind_terminal_affinity_ttl_since_last_use_expires_test,
@@ -598,6 +612,135 @@ bind_terminal_affinity_idempotent_test(Config) ->
     ?assertEqual([], released_affinities(CustomerID)),
     ok.
 
+%% The payment is the idempotency key. Rebinding by the same payment changes nothing at
+%% all; rebinding by a new one is a new successful payment and moves last_used_at.
+bind_terminal_affinity_same_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-same-payment">>, Client),
+    Payment = payment_ref(CustomerID),
+    {ok, First} = bind_affinity(CustomerID, 6, 60, undefined, Payment, Client),
+    ok = timer:sleep(50),
+    {ok, Repeat} = bind_affinity(CustomerID, 6, 60, undefined, Payment, Client),
+    ?assertEqual(First#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
+    ?assertEqual(First#customer_TerminalAffinity.bound_at, Repeat#customer_TerminalAffinity.bound_at),
+    %% Not merely "did not go backwards": the retry left the row untouched
+    ?assertEqual(last_used_at(First), last_used_at(Repeat)),
+    ?assertEqual([], released_affinities(CustomerID)),
+    ok = timer:sleep(50),
+    %% A different payment on the same terminal: same binding, refreshed
+    {ok, Next} = bind_affinity(CustomerID, 6, 60, undefined, Client),
+    ?assertEqual(First#customer_TerminalAffinity.bind_seq, Next#customer_TerminalAffinity.bind_seq),
+    ?assert(last_used_at(Next) > last_used_at(First)),
+    ?assertEqual([], released_affinities(CustomerID)),
+    ok.
+
+%% The case the payment field exists for: a binding that expired between two attempts of
+%% the same machine step must not be released and rebound at the tail on the retry —
+%% that would move the payer to the end of their own history because of a retry alone
+bind_terminal_affinity_expired_same_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-expired-same-payment">>, Client),
+    Payment = payment_ref(CustomerID),
+    {ok, First} = bind_affinity(CustomerID, 6, 61, {since_bound, 86400}, Payment, Client),
+    1 = backdate_affinities(CustomerID, ?TEN_DAYS, ?TEN_DAYS),
+    LastUsedAt = affinity_last_used_at(CustomerID),
+    {ok, Repeat} = bind_affinity(CustomerID, 6, 61, {since_bound, 86400}, Payment, Client),
+    ?assertEqual(First#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
+    ?assertEqual([], released_affinities(CustomerID)),
+    %% The backdated row is still the live one, still backdated
+    {ok, [Live]} = cs_client:get_terminal_affinities(CustomerID, Client),
+    ?assertEqual(First#customer_TerminalAffinity.bind_seq, Live#customer_TerminalAffinity.bind_seq),
+    ?assertEqual(LastUsedAt, affinity_last_used_at(CustomerID)),
+    ok.
+
+%% Same expired binding, but a genuinely new payment: this is the rebind the TTL is for
+bind_terminal_affinity_expired_new_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-expired-new-payment">>, Client),
+    {ok, First} = bind_affinity(CustomerID, 6, 62, undefined, Client),
+    1 = backdate_affinities(CustomerID, ?TEN_DAYS, ?TEN_DAYS),
+    {ok, Second} = bind_affinity(CustomerID, 6, 62, {since_bound, 86400}, Client),
+    ?assert(Second#customer_TerminalAffinity.bind_seq > First#customer_TerminalAffinity.bind_seq),
+    ?assertEqual([{First#customer_TerminalAffinity.bind_seq, <<"expired">>}], released_affinities(CustomerID)),
+    {ok, [Live]} = cs_client:get_terminal_affinities(CustomerID, Client),
+    ?assertEqual(Second#customer_TerminalAffinity.bind_seq, Live#customer_TerminalAffinity.bind_seq),
+    ok.
+
+%% Binding remembers the payment for the Customer, so hellgate needs no separate
+%% AddPayment call for it — none is made here
+bind_terminal_affinity_records_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-records-payment">>, Client),
+    Payment = payment_ref(CustomerID),
+    #customer_PaymentRef{invoice_id = InvoiceID, payment_id = PaymentID} = Payment,
+    ?assertEqual({ok, []}, payments_of(CustomerID, Client)),
+    {ok, _} = bind_affinity(CustomerID, 6, 63, undefined, Payment, Client),
+    ?assertEqual({ok, [{InvoiceID, PaymentID}]}, payments_of(CustomerID, Client)),
+    %% A retry of the same bind does not duplicate it
+    {ok, _} = bind_affinity(CustomerID, 6, 63, undefined, Payment, Client),
+    ?assertEqual({ok, [{InvoiceID, PaymentID}]}, payments_of(CustomerID, Client)),
+    ok.
+
+%% The payment ledger remembers every payment, not just the last one: an intervening
+%% payment leaves the first one's trace intact, and a repeat of the first is still
+%% recognised as a repeat across it
+bind_terminal_affinity_stale_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-stale-payment">>, Client),
+    First = payment_ref(CustomerID),
+    {ok, Bound} = bind_affinity(CustomerID, 6, 64, undefined, First, Client),
+    %% An intervening payment on the same binding
+    {ok, _} = bind_affinity(CustomerID, 6, 64, undefined, Client),
+    1 = backdate_affinities(CustomerID, ?TEN_DAYS, ?TEN_DAYS),
+    LastUsedAt = affinity_last_used_at(CustomerID),
+    %% A repeat of the first payment on an expired binding: had we not recognised the
+    %% repeat, the TTL would have released it and rebound it at the tail of the history
+    {ok, Repeat} = bind_affinity(CustomerID, 6, 64, {since_bound, 86400}, First, Client),
+    ?assertEqual(Bound#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
+    ?assertEqual([], released_affinities(CustomerID)),
+    ?assertEqual(LastUsedAt, affinity_last_used_at(CustomerID)),
+    ok.
+
+%% A repeat of its payment does not resurrect a released binding: the payment has done
+%% its work, and that is recorded in the ledger rather than in the binding itself, which
+%% by then may be gone
+bind_terminal_affinity_released_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-released-payment">>, Client),
+    Payment = payment_ref(CustomerID),
+    {ok, Bound} = bind_affinity(CustomerID, 6, 65, undefined, Payment, Client),
+    ReleaseParams = #customer_ReleaseTerminalAffinityParams{
+        customer_id = CustomerID,
+        key = terminal_key(6, 65),
+        reason = <<"manual">>
+    },
+    {ok, ok} = cs_client:release_terminal_affinity(ReleaseParams, Client),
+    {ok, Repeat} = bind_affinity(CustomerID, 6, 65, undefined, Payment, Client),
+    %% The same row comes back, but that does not make it live again
+    ?assertEqual(Bound#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
+    ?assertEqual({ok, []}, cs_client:get_terminal_affinities(CustomerID, Client)),
+    ?assertEqual([{Bound#customer_TerminalAffinity.bind_seq, <<"manual">>}], released_affinities(CustomerID)),
+    ok.
+
+%% A payment written by a separate AddPayment has no binding credited to it: a bind by
+%% it is the first one, not a repeat. Payments that entered the ledger before this
+%% migration look the same
+bind_terminal_affinity_after_add_payment_test(Config) ->
+    Client = ?config(client, Config),
+    CustomerID = create_affinity_customer(<<"party-affinity-after-add-payment">>, Client),
+    Payment = payment_ref(CustomerID),
+    #customer_PaymentRef{invoice_id = InvoiceID, payment_id = PaymentID} = Payment,
+    {ok, ok} = cs_client:add_payment(CustomerID, InvoiceID, PaymentID, Client),
+    {ok, Bound} = bind_affinity(CustomerID, 6, 66, undefined, Payment, Client),
+    %% The ledger still holds exactly one payment
+    ?assertEqual({ok, [{InvoiceID, PaymentID}]}, payments_of(CustomerID, Client)),
+    ok = timer:sleep(50),
+    %% And the next call by it is a repeat
+    {ok, Repeat} = bind_affinity(CustomerID, 6, 66, undefined, Payment, Client),
+    ?assertEqual(Bound#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
+    ?assertEqual(last_used_at(Bound), last_used_at(Repeat)),
+    ok.
+
 %% Hard TTL: an affinity bound long ago expires and is rebound at the tail
 bind_terminal_affinity_ttl_since_bound_test(Config) ->
     Client = ?config(client, Config),
@@ -837,16 +980,31 @@ create_affinity_customer(PartyID, Client) ->
     ),
     Customer#customer_Customer.id.
 
+%% Unless a test deliberately reuses one, every bind carries its own payment: that is
+%% what a second successful payment looks like to the service
 bind_affinity(CustomerID, ProviderID, TerminalID, Ttl, Client) ->
+    bind_affinity(CustomerID, ProviderID, TerminalID, Ttl, payment_ref(CustomerID), Client).
+
+bind_affinity(CustomerID, ProviderID, TerminalID, Ttl, Payment, Client) ->
     cs_client:bind_terminal_affinity(
         #customer_TerminalAffinityParams{
             customer_id = CustomerID,
             provider_ref = #domain_ProviderRef{id = ProviderID},
             terminal_ref = #domain_TerminalRef{id = TerminalID},
-            ttl = Ttl
+            ttl = Ttl,
+            payment = Payment
         },
         Client
     ).
+
+%% payment_ref(invoice_id, payment_id) is unique database-wide, and the suite runs
+%% repeatedly against the same database; the customer's fresh UUID keeps runs apart
+payment_ref(CustomerID) ->
+    Nth = integer_to_binary(erlang:unique_integer([positive, monotonic])),
+    #customer_PaymentRef{
+        invoice_id = <<"inv-", CustomerID/binary, "-", Nth/binary>>,
+        payment_id = <<"pay-", CustomerID/binary, "-", Nth/binary>>
+    }.
 
 terminal_key(ProviderID, TerminalID) ->
     #customer_ProviderTerminalKey{
@@ -859,6 +1017,17 @@ affinity_key(#customer_TerminalAffinity{provider_ref = ProviderRef, terminal_ref
 
 last_used_at(#customer_TerminalAffinity{last_used_at = Timestamp}) ->
     calendar:rfc3339_to_system_time(binary_to_list(Timestamp), [{unit, microsecond}]).
+
+payments_of(CustomerID, Client) ->
+    case cs_client:get_payments(CustomerID, 100, undefined, Client) of
+        {ok, #customer_CustomerPaymentsResponse{payments = Payments}} ->
+            {ok, [
+                {InvoiceID, PaymentID}
+             || #customer_CustomerPayment{invoice_id = InvoiceID, payment_id = PaymentID} <- Payments
+            ]};
+        Other ->
+            Other
+    end.
 
 %% Direct database access, to observe what the API deliberately does not expose
 
@@ -883,6 +1052,19 @@ released_affinities(CustomerID) ->
         ORDER BY bind_seq
         """,
     select(Query, [CustomerID]).
+
+%% The live binding's base, read straight from the table: an untouched retry must not
+%% move it, and equality is the whole assertion
+affinity_last_used_at(CustomerID) ->
+    Query =
+        """
+        SELECT last_used_at
+        FROM terminal_affinity
+        WHERE customer_id = $1::uuid
+          AND released_at IS NULL
+        """,
+    [{LastUsedAt}] = select(Query, [CustomerID]),
+    LastUsedAt.
 
 backdate_affinities(CustomerID, BoundAge, LastUsedAge) ->
     Query =

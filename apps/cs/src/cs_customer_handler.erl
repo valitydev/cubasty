@@ -202,15 +202,18 @@ do_handle_function('BindTerminalAffinity', {Params}, _Context, _Options) ->
         customer_id = CustomerID,
         provider_ref = ProviderRef,
         terminal_ref = TerminalRef,
-        ttl = Ttl
+        ttl = Ttl,
+        payment = Payment
     } = Params,
-    case cs_terminal_affinity:bind(CustomerID, ProviderRef, TerminalRef, Ttl) of
+    case cs_terminal_affinity:bind(CustomerID, ProviderRef, TerminalRef, Ttl, Payment) of
         {ok, Affinity} ->
             {ok, cs_mapper:terminal_affinity_to_thrift(Affinity)};
         {error, not_found} ->
             woody_error:raise(business, #customer_CustomerNotFound{});
         {error, invalid_request} ->
             woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid ttl">>]});
+        {error, invalid_payment} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid payment">>]});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
