@@ -32,7 +32,7 @@
 -type payment_ref() :: dmsl_customer_thrift:'PaymentRef'().
 
 -type affinity() :: cs_terminal_affinity_database:affinity().
-%% Expiration base and the timestamp an affinity is expired when its base precedes
+%% What the database layer compares with its own clock to release an expired affinity
 -type cutoff() :: cs_terminal_affinity_database:cutoff().
 
 %% API
@@ -123,34 +123,23 @@ payment_to_map(#customer_PaymentRef{invoice_id = InvoiceID, payment_id = Payment
 payment_to_map(_Payment) ->
     {error, invalid_payment}.
 
-%% Every ttl variant names the moment an affinity expires; here it is turned into
-%% what the database layer compares: a cutoff for a base column, or a verdict that
-%% the active affinity is already expired regardless of its bases.
+%% Every ttl variant names the moment an affinity expires; here it is turned into what the
+%% database layer compares with its own clock, the one that stamps bound_at and last_used_at:
+%% a timeout for a base column, or an absolute deadline.
 -spec ttl_to_cutoff(ttl()) -> {ok, cutoff()} | {error, invalid_request}.
 ttl_to_cutoff(undefined) ->
     {ok, undefined};
 ttl_to_cutoff({Base, Timeout}) when
     (Base =:= since_bound orelse Base =:= since_last_use), is_integer(Timeout), Timeout >= 0
 ->
-    %% Microseconds rather than seconds: hellgate decides whether a binding is live in
-    %% milliseconds, and rounding the cutoff to a second would extend its life on this
-    %% side of the call.
-    Cutoff = erlang:system_time(microsecond) - Timeout * 1000000,
-    Formatted = calendar:system_time_to_rfc3339(Cutoff, [{unit, microsecond}, {offset, "Z"}]),
-    {ok, {Base, list_to_binary(Formatted)}};
+    {ok, {Base, Timeout}};
 ttl_to_cutoff({deadline, Deadline}) when is_binary(Deadline) ->
-    %% Parsed here rather than left to the PostgreSQL timestamptz parser: the latter
-    %% turns a malformed deadline into a transaction error (a system error to the
-    %% caller instead of the declared InvalidRequest) and silently accepts the special
-    %% values 'now' / 'infinity' / 'yesterday', which would expire every affinity.
-    %% An absolute deadline is indifferent to bound_at / last_used_at: once it has
-    %% passed, the active affinity is expired, whatever its bases say.
+    %% Validated here rather than left to the PostgreSQL timestamptz parser: the latter
+    %% turns a malformed deadline into a transaction error (a system error to the caller
+    %% instead of the declared InvalidRequest) and silently accepts the special values
+    %% 'now' / 'infinity' / 'yesterday', which would expire every affinity.
     try calendar:rfc3339_to_system_time(binary_to_list(Deadline), [{unit, microsecond}]) of
-        Micro ->
-            case Micro =< erlang:system_time(microsecond) of
-                true -> {ok, expired};
-                false -> {ok, undefined}
-            end
+        _ -> {ok, {deadline, Deadline}}
     catch
         _:_ -> {error, invalid_request}
     end;

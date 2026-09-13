@@ -5,6 +5,7 @@
     bind/5,
     release/4,
     release_by_customer/2,
+    release_by_customer/3,
     release_by_terminal/3
 ]).
 
@@ -19,10 +20,10 @@
     bound_at := term(),
     last_used_at := term()
 }.
-%% What bind/5 releases before writing: nothing, the active affinity whatever its
-%% bases (an absolute deadline has passed), or the one whose base column precedes
-%% the cutoff timestamp.
--type cutoff() :: undefined | expired | {since_bound | since_last_use, binary()}.
+%% What bind/5 releases before writing: nothing, the active affinity once an absolute
+%% deadline has passed, or the one whose base column is older than the timeout in seconds.
+%% Both are judged by the database clock, the one that stamps bound_at and last_used_at.
+-type cutoff() :: undefined | {deadline, binary()} | {since_bound | since_last_use, non_neg_integer()}.
 %% The payment a bind is made on behalf of: the idempotency key of bind/5 and, at the
 %% same time, the payment remembered for the Customer.
 -type payment_ref() :: #{
@@ -96,13 +97,20 @@ release(CustomerID, ProviderRef, TerminalRef, Reason) ->
 -spec release_by_customer(customer_id(), binary() | undefined) ->
     {ok, non_neg_integer()} | {error, term()}.
 release_by_customer(CustomerID, Reason) ->
+    release_by_customer(?POOL, CustomerID, Reason).
+
+%% Same statement on a caller-supplied connection, so that the release can join a
+%% transaction that is already open (see cs_customer_database:delete/2)
+-spec release_by_customer(epgsql:connection() | atom(), customer_id(), binary() | undefined) ->
+    {ok, non_neg_integer()} | {error, term()}.
+release_by_customer(PoolOrConn, CustomerID, Reason) ->
     Query = """
     UPDATE terminal_affinity
     SET released_at = NOW(), released_reason = $2
     WHERE customer_id = $1::uuid
       AND released_at IS NULL
     """,
-    case epg_pool:query(?POOL, Query, [CustomerID, Reason]) of
+    case epg_pool:query(PoolOrConn, Query, [CustomerID, Reason]) of
         {ok, N} -> {ok, N};
         {error, Error} -> {error, Error}
     end.
@@ -213,7 +221,7 @@ link_payment(Conn, PaymentRefID, AffinityID) ->
 
 release_expired(_Conn, _CustomerID, _ProviderRef, _TerminalRef, undefined) ->
     ok;
-release_expired(Conn, CustomerID, ProviderRef, TerminalRef, expired) ->
+release_expired(Conn, CustomerID, ProviderRef, TerminalRef, {deadline, Deadline}) ->
     Query = """
     UPDATE terminal_affinity
     SET released_at = NOW(), released_reason = 'expired'
@@ -221,12 +229,10 @@ release_expired(Conn, CustomerID, ProviderRef, TerminalRef, expired) ->
       AND provider_ref = $2
       AND terminal_ref = $3
       AND released_at IS NULL
+      AND $4::text::timestamptz <= NOW()
     """,
-    case epg_pool:query(Conn, Query, [CustomerID, ProviderRef, TerminalRef]) of
-        {ok, _} -> ok;
-        {error, Reason} -> rollback(Reason)
-    end;
-release_expired(Conn, CustomerID, ProviderRef, TerminalRef, {Base, CutoffAt}) ->
+    run_release(Conn, Query, [CustomerID, ProviderRef, TerminalRef, Deadline]);
+release_expired(Conn, CustomerID, ProviderRef, TerminalRef, {Base, Timeout}) ->
     Query = """
     UPDATE terminal_affinity
     SET released_at = NOW(), released_reason = 'expired'
@@ -235,9 +241,11 @@ release_expired(Conn, CustomerID, ProviderRef, TerminalRef, {Base, CutoffAt}) ->
       AND terminal_ref = $3
       AND released_at IS NULL
       AND (CASE $5::text WHEN 'since_bound' THEN bound_at ELSE last_used_at END)
-          <= $4::text::timestamptz
+          <= NOW() - $4::int * interval '1 second'
     """,
-    Params = [CustomerID, ProviderRef, TerminalRef, CutoffAt, atom_to_binary(Base, utf8)],
+    run_release(Conn, Query, [CustomerID, ProviderRef, TerminalRef, Timeout, atom_to_binary(Base, utf8)]).
+
+run_release(Conn, Query, Params) ->
     case epg_pool:query(Conn, Query, Params) of
         {ok, _} -> ok;
         {error, Reason} -> rollback(Reason)

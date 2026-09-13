@@ -62,6 +62,7 @@
     bind_terminal_affinity_stale_payment_test/1,
     bind_terminal_affinity_released_payment_test/1,
     bind_terminal_affinity_after_add_payment_test/1,
+    bind_terminal_affinity_foreign_payment_test/1,
     bind_terminal_affinity_ttl_since_bound_test/1,
     bind_terminal_affinity_ttl_since_last_use_test/1,
     bind_terminal_affinity_ttl_since_last_use_expires_test/1,
@@ -120,6 +121,7 @@ groups() ->
             bind_terminal_affinity_stale_payment_test,
             bind_terminal_affinity_released_payment_test,
             bind_terminal_affinity_after_add_payment_test,
+            bind_terminal_affinity_foreign_payment_test,
             bind_terminal_affinity_ttl_since_bound_test,
             bind_terminal_affinity_ttl_since_last_use_test,
             bind_terminal_affinity_ttl_since_last_use_expires_test,
@@ -739,6 +741,22 @@ bind_terminal_affinity_after_add_payment_test(Config) ->
     {ok, Repeat} = bind_affinity(CustomerID, 6, 66, undefined, Payment, Client),
     ?assertEqual(Bound#customer_TerminalAffinity.bind_seq, Repeat#customer_TerminalAffinity.bind_seq),
     ?assertEqual(last_used_at(Bound), last_used_at(Repeat)),
+    ok.
+
+%% A payment already recorded for one Customer cannot bind another: a permanent condition,
+%% reported as a rejected request rather than as a failure worth retrying
+bind_terminal_affinity_foreign_payment_test(Config) ->
+    Client = ?config(client, Config),
+    Owner = create_affinity_customer(<<"party-affinity-foreign-owner">>, Client),
+    Other = create_affinity_customer(<<"party-affinity-foreign-other">>, Client),
+    Payment = payment_ref(Owner),
+    #customer_PaymentRef{invoice_id = InvoiceID, payment_id = PaymentID} = Payment,
+    {ok, ok} = cs_client:add_payment(Owner, InvoiceID, PaymentID, Client),
+    ?assertMatch(
+        {exception, #base_InvalidRequest{}},
+        bind_affinity(Other, 6, 67, undefined, Payment, Client)
+    ),
+    ?assertEqual({ok, []}, cs_client:get_terminal_affinities(Other, Client)),
     ok.
 
 %% Hard TTL: an affinity bound long ago expires and is rebound at the tail

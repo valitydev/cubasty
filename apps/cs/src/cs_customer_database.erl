@@ -7,7 +7,7 @@
     get_by_email/2,
     find_or_create_by_email/2,
     get_by_payment/2,
-    delete/1,
+    delete/2,
     link_bank_card/2,
     unlink_bank_card/2,
     get_bank_cards/3,
@@ -103,20 +103,11 @@ get_by_email(Email, PartyRef) ->
 
 -spec find_or_create_by_email(binary(), binary()) -> {ok, customer()} | {error, term()}.
 find_or_create_by_email(PartyRef, Email) ->
-    %% ON CONFLICT predicate is literally the predicate of idx_customer_email_party,
-    %% otherwise PostgreSQL fails to infer the arbiter index (42P10). The DO UPDATE is
-    %% a no-op needed to make RETURNING fire for an already existing row as well.
-    Query = """
-    INSERT INTO customer (party_ref, email)
-    VALUES ($1, $2)
-    ON CONFLICT (email, party_ref) WHERE deleted_at IS NULL AND email IS NOT NULL
-    DO UPDATE SET email = EXCLUDED.email
-    RETURNING id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
-    """,
-    case query_rows(?POOL, Query, [PartyRef, Email]) of
-        {ok, [Row]} -> {ok, row_to_customer(Row)};
-        {ok, []} -> {error, failed_to_create};
-        {error, Reason} -> {error, Reason}
+    %% Read first: a payer who already exists is found without a write, so concurrent
+    %% payments of one payer neither serialize on the row nor churn the table
+    case get_by_email(Email, PartyRef) of
+        {error, not_found} -> insert_by_email(PartyRef, Email);
+        Result -> Result
     end.
 
 -spec get_by_payment(invoice_id(), payment_id()) -> {ok, customer()} | {error, not_found | term()}.
@@ -139,16 +130,33 @@ get_by_payment(InvoiceId, PaymentId) ->
         {error, Reason} -> {error, Reason}
     end.
 
--spec delete(customer_id()) -> ok | {error, not_found | term()}.
-delete(CustomerID) ->
-    Query = """
-    UPDATE customer
-    SET deleted_at = NOW()
-    WHERE id = $1 AND deleted_at IS NULL
-    """,
-    case epg_pool:query(?POOL, Query, [CustomerID]) of
-        {ok, 1} -> ok;
-        {ok, 0} -> {error, not_found};
+-spec delete(customer_id(), binary()) -> ok | {error, not_found | term()}.
+delete(CustomerID, ReleaseReason) ->
+    %% The soft delete and the release of the Customer's bindings commit together: released
+    %% afterwards, a failed release would leave bindings live on a deleted Customer, and a
+    %% repeated Delete would find nothing left to delete
+    Fun = fun(Conn) ->
+        Query = """
+        UPDATE customer
+        SET deleted_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+        """,
+        case epg_pool:query(Conn, Query, [CustomerID]) of
+            {ok, 1} ->
+                case cs_terminal_affinity_database:release_by_customer(Conn, CustomerID, ReleaseReason) of
+                    {ok, _Count} -> ok;
+                    {error, Reason} -> erlang:error({?MODULE, Reason})
+                end;
+            {ok, 0} ->
+                erlang:error({?MODULE, not_found});
+            {error, Reason} ->
+                erlang:error({?MODULE, Reason})
+        end
+    end,
+    case epg_pool:transaction(?POOL, Fun) of
+        ok -> ok;
+        {rollback, {?MODULE, Reason}} -> {error, Reason};
+        {rollback, Reason} -> {error, Reason};
         {error, Reason} -> {error, Reason}
     end.
 
@@ -232,6 +240,30 @@ get_payments(CustomerID, Limit, Offset) ->
     query_with_total(?POOL, Query, [CustomerID, Limit, Offset], RowMapper).
 
 %% Internal functions
+
+insert_by_email(PartyRef, Email) ->
+    %% ON CONFLICT predicate is literally the predicate of idx_customer_email_party,
+    %% otherwise PostgreSQL fails to infer the arbiter index (42P10)
+    Query = """
+    INSERT INTO customer (party_ref, email)
+    VALUES ($1, $2)
+    ON CONFLICT (email, party_ref) WHERE deleted_at IS NULL AND email IS NOT NULL
+    DO NOTHING
+    RETURNING id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
+    """,
+    case query_rows(?POOL, Query, [PartyRef, Email]) of
+        {ok, [Row]} ->
+            {ok, row_to_customer(Row)};
+        %% A concurrent call created the same payer first: the conflict waited for it to
+        %% commit, so the next statement sees its row
+        {ok, []} ->
+            case get_by_email(Email, PartyRef) of
+                {error, not_found} -> {error, failed_to_create};
+                Result -> Result
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt, ExternalID, Email}) ->
     #{

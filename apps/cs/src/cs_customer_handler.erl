@@ -214,6 +214,9 @@ do_handle_function('BindTerminalAffinity', {Params}, _Context, _Options) ->
             woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid ttl">>]});
         {error, invalid_payment} ->
             woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid payment">>]});
+        %% Permanent: the payment is already recorded for another Customer
+        {error, payment_of_other_customer} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"payment belongs to another customer">>]});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;

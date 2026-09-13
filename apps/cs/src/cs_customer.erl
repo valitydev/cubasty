@@ -166,14 +166,9 @@ normalize_email(_Email) ->
 
 -spec delete(customer_id()) -> ok | {error, not_found | term()}.
 delete(CustomerID) ->
-    case cs_customer_database:delete(CustomerID) of
-        ok ->
-            %% Orphan affinities would outlive the customer and the freed email
-            _ = release_terminal_affinities(CustomerID),
-            ok;
-        Error ->
-            Error
-    end.
+    %% Orphan affinities would outlive the customer and the freed email, so they are
+    %% released in the same transaction as the delete itself
+    cs_customer_database:delete(CustomerID, ?DELETED_REASON).
 
 -spec add_bank_card(customer_id(), bank_card_id()) -> ok | {error, customer_not_found | term()}.
 add_bank_card(CustomerID, BankCardId) ->
@@ -245,18 +240,6 @@ validate_email_charset(Email) ->
     case binary:match(Email, ControlChars) of
         nomatch -> {ok, Email};
         _ -> {error, invalid_email}
-    end.
-
--spec release_terminal_affinities(customer_id()) -> ok.
-release_terminal_affinities(CustomerID) ->
-    case cs_terminal_affinity:release_by_customer(CustomerID, ?DELETED_REASON) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            logger:warning("failed to release terminal affinities of customer ~s: ~p", [
-                CustomerID, Reason
-            ]),
-            ok
     end.
 
 -spec make_continuation_token(non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
