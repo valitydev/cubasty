@@ -103,11 +103,23 @@ get_by_email(Email, PartyRef) ->
 
 -spec find_or_create_by_email(binary(), binary()) -> {ok, customer()} | {error, term()}.
 find_or_create_by_email(PartyRef, Email) ->
+    find_or_create_by_email(PartyRef, Email, 2).
+
+find_or_create_by_email(_PartyRef, _Email, 0) ->
+    {error, failed_to_create};
+find_or_create_by_email(PartyRef, Email, Rounds) ->
     %% Read first: a payer who already exists is found without a write, so concurrent
     %% payments of one payer neither serialize on the row nor churn the table
     case get_by_email(Email, PartyRef) of
-        {error, not_found} -> insert_by_email(PartyRef, Email);
-        Result -> Result
+        {error, not_found} ->
+            case insert_by_email(PartyRef, Email) of
+                %% A concurrent call created the same payer first; its row is visible now,
+                %% unless it was deleted in between, in which case the next round creates one
+                conflict -> find_or_create_by_email(PartyRef, Email, Rounds - 1);
+                Result -> Result
+            end;
+        Result ->
+            Result
     end.
 
 -spec get_by_payment(invoice_id(), payment_id()) -> {ok, customer()} | {error, not_found | term()}.
@@ -254,13 +266,9 @@ insert_by_email(PartyRef, Email) ->
     case query_rows(?POOL, Query, [PartyRef, Email]) of
         {ok, [Row]} ->
             {ok, row_to_customer(Row)};
-        %% A concurrent call created the same payer first: the conflict waited for it to
-        %% commit, so the next statement sees its row
+        %% The conflict waited for the concurrent insert to commit
         {ok, []} ->
-            case get_by_email(Email, PartyRef) of
-                {error, not_found} -> {error, failed_to_create};
-                Result -> Result
-            end;
+            conflict;
         {error, Reason} ->
             {error, Reason}
     end.

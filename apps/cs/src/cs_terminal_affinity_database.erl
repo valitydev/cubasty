@@ -166,11 +166,14 @@ remember_payment(Conn, CustomerID, #{invoice_id := InvoiceID, payment_id := Paym
     end.
 
 lookup_payment(Conn, CustomerID, InvoiceID, PaymentID) ->
+    %% Locked, so two binds by a payment that is in the ledger without a binding cannot both
+    %% take it as fresh; the lock order stays customer, payment, affinity
     Query = """
     SELECT id, customer_id, terminal_affinity_id
     FROM payment_ref
     WHERE invoice_id = $1
       AND payment_id = $2
+    FOR UPDATE
     """,
     case query_rows(Conn, Query, [InvoiceID, PaymentID]) of
         %% The ledger is unique by payment database-wide, so the row found may belong to
@@ -252,12 +255,14 @@ run_release(Conn, Query, Params) ->
     end.
 
 upsert(Conn, CustomerID, ProviderRef, TerminalRef) ->
-    %% ON CONFLICT predicate is literally the predicate of idx_terminal_affinity_unique
+    %% ON CONFLICT predicate is literally the predicate of idx_terminal_affinity_unique.
+    %% NOW() is the transaction start, so GREATEST keeps a slower concurrent bind from moving
+    %% last_used_at backwards
     Query = """
     INSERT INTO terminal_affinity (customer_id, provider_ref, terminal_ref)
     VALUES ($1::uuid, $2, $3)
     ON CONFLICT (customer_id, provider_ref, terminal_ref) WHERE released_at IS NULL
-    DO UPDATE SET last_used_at = NOW()
+    DO UPDATE SET last_used_at = GREATEST(terminal_affinity.last_used_at, NOW())
     RETURNING id, provider_ref, terminal_ref, bind_seq, bound_at, last_used_at
     """,
     case query_rows(Conn, Query, [CustomerID, ProviderRef, TerminalRef]) of
