@@ -14,7 +14,13 @@
     remove_bank_card/3,
     add_payment/4,
     get_payments/4,
-    get_bank_cards/4
+    get_bank_cards/4,
+    find_or_create_customer_by_email/3,
+    get_customer_by_email/3,
+    get_terminal_affinities/2,
+    bind_terminal_affinity/2,
+    release_terminal_affinity/2,
+    release_terminal_affinities_by_terminal/3
 ]).
 
 %% BankCardStorage API
@@ -78,6 +84,38 @@ get_payments(CustomerID, Limit, ContinuationToken, Client) ->
     {ok, dmsl_customer_thrift:'CustomerBankCardsResponse'()} | {exception, term()} | {error, term()}.
 get_bank_cards(CustomerID, Limit, ContinuationToken, Client) ->
     cs_client_api:call(customer_management, 'GetBankCards', [CustomerID, Limit, ContinuationToken], Client).
+
+-spec find_or_create_customer_by_email(dmsl_domain_thrift:'PartyConfigRef'(), binary(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'Customer'()} | {exception, term()} | {error, term()}.
+find_or_create_customer_by_email(PartyRef, Email, Client) ->
+    cs_client_api:call(customer_management, 'FindOrCreateByEmail', [PartyRef, Email], Client).
+
+-spec get_customer_by_email(dmsl_domain_thrift:'PartyConfigRef'(), binary(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
+get_customer_by_email(PartyRef, Email, Client) ->
+    cs_client_api:call(customer_management, 'GetByEmail', [PartyRef, Email], Client).
+
+-spec get_terminal_affinities(binary(), cs_client_api:t()) ->
+    {ok, [dmsl_customer_thrift:'TerminalAffinity'()]} | {exception, term()} | {error, term()}.
+get_terminal_affinities(CustomerID, Client) ->
+    cs_client_api:call(customer_management, 'GetTerminalAffinities', [CustomerID], Client).
+
+-spec bind_terminal_affinity(dmsl_customer_thrift:'TerminalAffinityParams'(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'TerminalAffinity'()} | {exception, term()} | {error, term()}.
+bind_terminal_affinity(Params, Client) ->
+    cs_client_api:call(customer_management, 'BindTerminalAffinity', [Params], Client).
+
+-spec release_terminal_affinity(dmsl_customer_thrift:'ReleaseTerminalAffinityParams'(), cs_client_api:t()) ->
+    {ok, ok} | {exception, term()} | {error, term()}.
+release_terminal_affinity(Params, Client) ->
+    cs_client_api:call(customer_management, 'ReleaseTerminalAffinity', [Params], Client).
+
+-spec release_terminal_affinities_by_terminal(
+    dmsl_customer_thrift:'ProviderTerminalKey'(), binary() | undefined, cs_client_api:t()
+) ->
+    {ok, ok} | {exception, term()} | {error, term()}.
+release_terminal_affinities_by_terminal(Key, Reason, Client) ->
+    cs_client_api:call(customer_management, 'ReleaseTerminalAffinitiesByTerminal', [Key, Reason], Client).
 
 %% BankCardStorage
 

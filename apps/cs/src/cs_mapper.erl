@@ -10,7 +10,8 @@
     bank_card_with_tokens_to_thrift/1,
     bank_card_info_to_thrift/1,
     payment_to_thrift/1,
-    recurrent_token_to_thrift/1
+    recurrent_token_to_thrift/1,
+    terminal_affinity_to_thrift/1
 ]).
 
 -export_type([
@@ -20,6 +21,7 @@
     bank_card_with_tokens/0,
     bank_card_info/0,
     recurrent_token/0,
+    terminal_affinity/0,
     tokens_map/0
 ]).
 
@@ -30,6 +32,7 @@
 -type bank_card_with_tokens() :: cs_bank_card:bank_card_with_tokens().
 -type bank_card_info() :: cs_bank_card:bank_card_info().
 -type recurrent_token() :: cs_bank_card_database:recurrent_token().
+-type terminal_affinity() :: cs_terminal_affinity:affinity().
 -type tokens_map() :: #{
     dmsl_customer_thrift:'ProviderTerminalKey'() => dmsl_customer_thrift:'RecurrentToken'()
 }.
@@ -45,7 +48,8 @@ customer_to_thrift(Customer) ->
         status = customer_status(Customer),
         contact_info = maps:get(contact_info, Customer, undefined),
         metadata = maps:get(metadata, Customer, undefined),
-        external_id = maps:get(external_id, Customer, undefined)
+        external_id = maps:get(external_id, Customer, undefined),
+        email = maps:get(email, Customer, undefined)
     }.
 
 -spec customer_state_to_thrift(customer_state()) -> dmsl_customer_thrift:'CustomerState'().
@@ -123,6 +127,16 @@ recurrent_token_to_thrift(Token) ->
         token = maps:get(token, Token),
         created_at = format_timestamp_required(maps:get(created_at, Token)),
         status = recurrent_token_status(Token)
+    }.
+
+-spec terminal_affinity_to_thrift(terminal_affinity()) -> dmsl_customer_thrift:'TerminalAffinity'().
+terminal_affinity_to_thrift(Affinity) ->
+    #customer_TerminalAffinity{
+        provider_ref = binary_to_provider_ref(maps:get(provider_ref, Affinity)),
+        terminal_ref = binary_to_terminal_ref(maps:get(terminal_ref, Affinity)),
+        bind_seq = maps:get(bind_seq, Affinity),
+        bound_at = format_timestamp_required(maps:get(bound_at, Affinity)),
+        last_used_at = format_timestamp_required(maps:get(last_used_at, Affinity))
     }.
 
 %% Internal functions

@@ -1,11 +1,13 @@
 -module(cs_customer_database).
 
 -export([
-    create/4,
+    create/5,
     get/1,
     get_by_external_id/2,
+    get_by_email/2,
+    find_or_create_by_email/2,
     get_by_payment/2,
-    delete/1,
+    delete/2,
     link_bank_card/2,
     unlink_bank_card/2,
     get_bank_cards/3,
@@ -28,19 +30,21 @@
 
 %% API
 
--spec create(binary(), term(), term(), binary() | undefined) ->
-    {ok, customer_id()} | {error, term()}.
-create(PartyRef, ContactInfo, Metadata, ExternalID) ->
+-spec create(binary(), term(), term(), binary() | undefined, binary() | undefined) ->
+    {ok, customer_id()} | {error, external_id_conflict | email_conflict | term()}.
+create(PartyRef, ContactInfo, Metadata, ExternalID, Email) ->
     Query = """
-    INSERT INTO customer (party_ref, contact_info, metadata, external_id)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO customer (party_ref, contact_info, metadata, external_id, email)
+    VALUES ($1, $2, $3, $4, $5)
     RETURNING id
     """,
-    Params = [PartyRef, encode_contact_info(ContactInfo), encode_metadata(Metadata), ExternalID],
+    Params = [
+        PartyRef, encode_contact_info(ContactInfo), encode_metadata(Metadata), ExternalID, Email
+    ],
     case epg_pool:query(?POOL, Query, Params) of
         {ok, _, _, [{Id}]} -> {ok, Id};
         {ok, _, [{Id}]} -> {ok, Id};
-        {error, #error{codename = unique_violation}} -> {error, external_id_conflict};
+        {error, #error{codename = unique_violation, extra = Extra}} -> unique_violation(Extra);
         {error, Reason} -> {error, Reason};
         Other -> {error, {unexpected_result, Other}}
     end.
@@ -48,7 +52,7 @@ create(PartyRef, ContactInfo, Metadata, ExternalID) ->
 -spec get(customer_id()) -> {ok, customer()} | {error, not_found | term()}.
 get(CustomerID) ->
     Query = """
-    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id
+    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
     FROM customer
     WHERE id = $1::uuid
     """,
@@ -63,7 +67,7 @@ get(CustomerID) ->
 -spec get_by_external_id(binary(), binary()) -> {ok, customer()} | {error, not_found | term()}.
 get_by_external_id(ExternalID, PartyRef) ->
     Query = """
-    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id
+    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
     FROM customer
     WHERE external_id = $1
       AND party_ref = $2
@@ -78,10 +82,51 @@ get_by_external_id(ExternalID, PartyRef) ->
         {error, Reason} -> {error, Reason}
     end.
 
+%% Email is expected to be already normalized by the business layer.
+-spec get_by_email(binary(), binary()) -> {ok, customer()} | {error, not_found | term()}.
+get_by_email(Email, PartyRef) ->
+    Query = """
+    SELECT id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
+    FROM customer
+    WHERE email = $1
+      AND party_ref = $2
+      AND deleted_at IS NULL
+    LIMIT 1
+    """,
+    case epg_pool:query(?POOL, Query, [Email, PartyRef]) of
+        {ok, _, _, [Row]} -> {ok, row_to_customer(Row)};
+        {ok, _, _, []} -> {error, not_found};
+        {ok, _, [Row]} -> {ok, row_to_customer(Row)};
+        {ok, _, []} -> {error, not_found};
+        {error, Reason} -> {error, Reason}
+    end.
+
+-spec find_or_create_by_email(binary(), binary()) -> {ok, customer()} | {error, term()}.
+find_or_create_by_email(PartyRef, Email) ->
+    find_or_create_by_email(PartyRef, Email, 2).
+
+find_or_create_by_email(_PartyRef, _Email, 0) ->
+    {error, failed_to_create};
+find_or_create_by_email(PartyRef, Email, Rounds) ->
+    %% Read first: a payer who already exists is found without a write, so concurrent
+    %% payments of one payer neither serialize on the row nor churn the table
+    case get_by_email(Email, PartyRef) of
+        {error, not_found} ->
+            case insert_by_email(PartyRef, Email) of
+                %% A concurrent call created the same payer first; its row is visible now,
+                %% unless it was deleted in between, in which case the next round creates one
+                conflict -> find_or_create_by_email(PartyRef, Email, Rounds - 1);
+                Result -> Result
+            end;
+        Result ->
+            Result
+    end.
+
 -spec get_by_payment(invoice_id(), payment_id()) -> {ok, customer()} | {error, not_found | term()}.
 get_by_payment(InvoiceId, PaymentId) ->
     Query = """
-    SELECT c.id, c.party_ref, c.contact_info, c.metadata, c.created_at, c.deleted_at, c.external_id
+    SELECT c.id, c.party_ref, c.contact_info, c.metadata, c.created_at, c.deleted_at,
+           c.external_id, c.email
     FROM customer c
     JOIN payment_ref pr ON c.id = pr.customer_id
     WHERE pr.invoice_id = $1
@@ -97,16 +142,33 @@ get_by_payment(InvoiceId, PaymentId) ->
         {error, Reason} -> {error, Reason}
     end.
 
--spec delete(customer_id()) -> ok | {error, not_found | term()}.
-delete(CustomerID) ->
-    Query = """
-    UPDATE customer
-    SET deleted_at = NOW()
-    WHERE id = $1 AND deleted_at IS NULL
-    """,
-    case epg_pool:query(?POOL, Query, [CustomerID]) of
-        {ok, 1} -> ok;
-        {ok, 0} -> {error, not_found};
+-spec delete(customer_id(), binary()) -> ok | {error, not_found | term()}.
+delete(CustomerID, ReleaseReason) ->
+    %% The soft delete and the release of the Customer's bindings commit together: released
+    %% afterwards, a failed release would leave bindings live on a deleted Customer, and a
+    %% repeated Delete would find nothing left to delete
+    Fun = fun(Conn) ->
+        Query = """
+        UPDATE customer
+        SET deleted_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+        """,
+        case epg_pool:query(Conn, Query, [CustomerID]) of
+            {ok, 1} ->
+                case cs_terminal_affinity_database:release_by_customer(Conn, CustomerID, ReleaseReason) of
+                    {ok, _Count} -> ok;
+                    {error, Reason} -> erlang:error({?MODULE, Reason})
+                end;
+            {ok, 0} ->
+                erlang:error({?MODULE, not_found});
+            {error, Reason} ->
+                erlang:error({?MODULE, Reason})
+        end
+    end,
+    case epg_pool:transaction(?POOL, Fun) of
+        ok -> ok;
+        {rollback, {?MODULE, Reason}} -> {error, Reason};
+        {rollback, Reason} -> {error, Reason};
         {error, Reason} -> {error, Reason}
     end.
 
@@ -191,7 +253,27 @@ get_payments(CustomerID, Limit, Offset) ->
 
 %% Internal functions
 
-row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt, ExternalID}) ->
+insert_by_email(PartyRef, Email) ->
+    %% ON CONFLICT predicate is literally the predicate of idx_customer_email_party,
+    %% otherwise PostgreSQL fails to infer the arbiter index (42P10)
+    Query = """
+    INSERT INTO customer (party_ref, email)
+    VALUES ($1, $2)
+    ON CONFLICT (email, party_ref) WHERE deleted_at IS NULL AND email IS NOT NULL
+    DO NOTHING
+    RETURNING id, party_ref, contact_info, metadata, created_at, deleted_at, external_id, email
+    """,
+    case query_rows(?POOL, Query, [PartyRef, Email]) of
+        {ok, [Row]} ->
+            {ok, row_to_customer(Row)};
+        %% The conflict waited for the concurrent insert to commit
+        {ok, []} ->
+            conflict;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt, ExternalID, Email}) ->
     #{
         id => Id,
         party_ref => PartyRef,
@@ -199,8 +281,18 @@ row_to_customer({Id, PartyRef, ContactInfo, Metadata, CreatedAt, DeletedAt, Exte
         metadata => decode_metadata(Metadata),
         created_at => CreatedAt,
         deleted_at => null_to_default(DeletedAt, undefined),
-        external_id => null_to_default(ExternalID, undefined)
+        external_id => null_to_default(ExternalID, undefined),
+        email => null_to_default(Email, undefined)
     }.
+
+%% Both partial unique indexes on customer are reachable from create/5, so the
+%% conflicting one is told apart by constraint name.
+unique_violation(Extra) ->
+    case proplists:get_value(constraint_name, Extra) of
+        <<"idx_customer_external_id_party">> -> {error, external_id_conflict};
+        <<"idx_customer_email_party">> -> {error, email_conflict};
+        Name -> {error, {unique_violation, Name}}
+    end.
 
 null_to_default(null, Default) -> Default;
 null_to_default(V, _Default) -> V.
