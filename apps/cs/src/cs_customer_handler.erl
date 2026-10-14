@@ -24,8 +24,8 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
     } = Params,
     case cs_customer:create(PartyRef, ContactInfo, Metadata, ExternalID, Email) of
         {ok, CustomerID} ->
-            {ok, CustomerState} = cs_customer:get_state(CustomerID),
-            {ok, cs_mapper:customer_to_thrift(maps:get(customer, CustomerState))};
+            {ok, Customer} = cs_customer:get(CustomerID, PartyRef),
+            {ok, cs_mapper:customer_to_thrift(Customer)};
         {error, external_id_conflict} ->
             woody_error:raise(business, #customer_CustomerAlreadyExists{
                 id = get_existing_customer_id(ExternalID, PartyRef)
@@ -39,8 +39,8 @@ do_handle_function('Create', {Params}, _Context, _Options) ->
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('Get', {CustomerID}, _Context, _Options) ->
-    case cs_customer:get_state(CustomerID) of
+do_handle_function('Get', {CustomerID, PartyRef}, _Context, _Options) ->
+    case cs_customer:get_state(CustomerID, PartyRef) of
         {ok, State} ->
             {ok, cs_mapper:customer_state_to_thrift(State)};
         {error, not_found} ->
@@ -57,14 +57,50 @@ do_handle_function('GetByExternalID', {ExternalID, PartyRef}, _Context, _Options
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetByParentPayment', {InvoiceId, PaymentId}, _Context, _Options) ->
-    case cs_customer:get_by_payment(InvoiceId, PaymentId) of
+do_handle_function('FindOrCreateByExternalID', {PartyRef, ExternalID}, _Context, _Options) ->
+    case cs_customer:find_or_create_by_external_id(PartyRef, ExternalID) of
+        {ok, Customer} ->
+            {ok, cs_mapper:customer_to_thrift(Customer)};
+        {error, invalid_external_id} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid external_id">>]});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('AddExternalID', {CustomerID, PartyRef, ExternalID}, _Context, _Options) ->
+    case cs_customer:add_external_id(CustomerID, PartyRef, ExternalID) of
+        ok ->
+            {ok, ok};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, invalid_external_id} ->
+            woody_error:raise(business, #base_InvalidRequest{errors = [<<"invalid external_id">>]});
+        {error, {external_id_conflict, HolderID, HeldExternalID}} when
+            is_binary(HolderID), is_binary(HeldExternalID)
+        ->
+            woody_error:raise(business, #customer_CustomerExternalIDConflict{
+                id = HolderID,
+                external_id = HeldExternalID
+            });
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetByParentPayment', {InvoiceId, PaymentId, PartyRef}, _Context, _Options) ->
+    case cs_customer:get_by_payment(InvoiceId, PaymentId, PartyRef) of
         {ok, State} ->
             {ok, cs_mapper:customer_state_to_thrift(State)};
         {error, not_found} ->
             woody_error:raise(business, #customer_CustomerNotFound{});
-        {error, invalid_parent} ->
+        {error, invalid_recurrent_parent} ->
             woody_error:raise(business, #customer_InvalidRecurrentParent{});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetByWithdrawal', {WithdrawalID, PartyRef}, _Context, _Options) ->
+    case cs_customer:get_by_withdrawal(WithdrawalID, PartyRef) of
+        {ok, State} ->
+            {ok, cs_mapper:customer_state_to_thrift(State)};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
@@ -82,15 +118,17 @@ do_handle_function('AddBankCard', {CustomerID, Params}, _Context, _Options) ->
         bank_card_token = BankCardToken,
         card_mask = CardMask
     } = Params,
-    case cs_customer:get(CustomerID) of
-        {ok, Customer} ->
-            PartyRef = json_to_party_ref(maps:get(party_ref, Customer)),
-            case cs_bank_card:find_or_create(PartyRef, BankCardToken, CardMask) of
+    case cs_customer:exists(CustomerID) of
+        ok ->
+            case cs_bank_card:find_or_create(BankCardToken, CardMask) of
                 {ok, BankCardId} ->
                     case cs_customer:add_bank_card(CustomerID, BankCardId) of
                         ok ->
                             {ok, BankCard} = cs_bank_card:get_with_tokens(BankCardId),
                             {ok, cs_mapper:bank_card_with_tokens_to_thrift(BankCard)};
+                        %% Deleted in between
+                        {error, not_found} ->
+                            woody_error:raise(business, #customer_CustomerNotFound{});
                         {error, Reason} ->
                             woody_error:raise(system, {internal, Reason})
                     end;
@@ -103,8 +141,8 @@ do_handle_function('AddBankCard', {CustomerID, Params}, _Context, _Options) ->
             woody_error:raise(system, {internal, Reason})
     end;
 do_handle_function('RemoveBankCard', {CustomerID, BankCardId}, _Context, _Options) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _} ->
+    case cs_customer:exists(CustomerID) of
+        ok ->
             case cs_customer:remove_bank_card(CustomerID, BankCardId) of
                 ok ->
                     {ok, ok};
@@ -118,42 +156,59 @@ do_handle_function('RemoveBankCard', {CustomerID, BankCardId}, _Context, _Option
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('AddPayment', {CustomerID, InvoiceId, PaymentId}, _Context, _Options) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _} ->
-            case cs_customer:add_payment(CustomerID, InvoiceId, PaymentId) of
-                ok ->
-                    {ok, ok};
-                {error, Reason} ->
-                    woody_error:raise(system, {internal, Reason})
-            end;
+do_handle_function('AddPayment', {CustomerID, InvoiceId, PaymentId, PartyRef}, _Context, _Options) ->
+    case cs_customer:add_payment(CustomerID, PartyRef, InvoiceId, PaymentId) of
+        ok ->
+            {ok, ok};
         {error, not_found} ->
             woody_error:raise(business, #customer_CustomerNotFound{});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetPayments', {CustomerID, Limit, ContinuationToken}, _Context, _Options) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _} ->
-            Offset = cs_pagination:decode(ContinuationToken),
-            case cs_customer:get_payments(CustomerID, Limit, Offset) of
-                {ok, Payments, NextToken} ->
-                    PaymentsThrift = [cs_mapper:payment_to_thrift(P) || P <- Payments],
-                    {ok, #customer_CustomerPaymentsResponse{
-                        payments = PaymentsThrift,
-                        continuation_token = NextToken
-                    }};
-                {error, Reason} ->
-                    woody_error:raise(system, {internal, Reason})
-            end;
+do_handle_function('GetPayments', {CustomerID, Limit, ContinuationToken, PartyRef}, _Context, _Options) ->
+    Offset = cs_pagination:decode(ContinuationToken),
+    case cs_customer:get_payments(CustomerID, PartyRef, Limit, Offset) of
+        {ok, Payments, NextToken} ->
+            PaymentsThrift = [cs_mapper:payment_to_thrift(P) || P <- Payments],
+            {ok, #customer_CustomerPaymentsResponse{
+                payments = PaymentsThrift,
+                continuation_token = NextToken
+            }};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('AddWithdrawal', {CustomerID, WithdrawalID, PartyRef}, _Context, _Options) ->
+    case cs_customer:add_withdrawal(CustomerID, PartyRef, WithdrawalID) of
+        ok ->
+            {ok, ok};
+        {error, not_found} ->
+            woody_error:raise(business, #customer_CustomerNotFound{});
+        {error, withdrawal_of_other_customer} ->
+            woody_error:raise(business, #base_InvalidRequest{
+                errors = [<<"withdrawal belongs to another customer">>]
+            });
+        {error, Reason} ->
+            woody_error:raise(system, {internal, Reason})
+    end;
+do_handle_function('GetWithdrawals', {CustomerID, Limit, ContinuationToken, PartyRef}, _Context, _Options) ->
+    Offset = cs_pagination:decode(ContinuationToken),
+    case cs_customer:get_withdrawals(CustomerID, PartyRef, Limit, Offset) of
+        {ok, Withdrawals, NextToken} ->
+            WithdrawalsThrift = [cs_mapper:withdrawal_to_thrift(W) || W <- Withdrawals],
+            {ok, #customer_CustomerWithdrawalsResponse{
+                withdrawals = WithdrawalsThrift,
+                continuation_token = NextToken
+            }};
         {error, not_found} ->
             woody_error:raise(business, #customer_CustomerNotFound{});
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
 do_handle_function('GetBankCards', {CustomerID, Limit, ContinuationToken}, _Context, _Options) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _Customer} ->
+    case cs_customer:exists(CustomerID) of
+        ok ->
             Offset = cs_pagination:decode(ContinuationToken),
             case cs_customer:get_bank_cards(CustomerID, Limit, Offset) of
                 {ok, BankCardIds, NextToken} ->
@@ -203,9 +258,10 @@ do_handle_function('BindTerminalAffinity', {Params}, _Context, _Options) ->
         provider_ref = ProviderRef,
         terminal_ref = TerminalRef,
         ttl = Ttl,
-        payment = Payment
+        payment = Payment,
+        party_ref = PartyRef
     } = Params,
-    case cs_terminal_affinity:bind(CustomerID, ProviderRef, TerminalRef, Ttl, Payment) of
+    case cs_terminal_affinity:bind(CustomerID, PartyRef, ProviderRef, TerminalRef, Ttl, Payment) of
         {ok, Affinity} ->
             {ok, cs_mapper:terminal_affinity_to_thrift(Affinity)};
         {error, not_found} ->
@@ -274,7 +330,3 @@ ensure_woody_deadline_set(WoodyContext, DefaultDeadline) ->
         _ ->
             WoodyContext
     end.
-
-json_to_party_ref(PartyRefJson) ->
-    Type = {struct, struct, {dmsl_domain_thrift, 'PartyConfigRef'}},
-    cs_json:json_to_term(cs_json:decode(PartyRefJson), Type).

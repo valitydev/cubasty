@@ -2,7 +2,7 @@
 
 -export([
     list/1,
-    bind/5,
+    bind/6,
     release/4,
     release_by_customer/2,
     release_by_customer/3,
@@ -49,18 +49,24 @@ list(CustomerID) ->
         {error, Reason} -> {error, Reason}
     end.
 
--spec bind(customer_id(), binary(), binary(), cutoff(), payment_ref()) ->
+-spec bind(customer_id(), binary(), binary(), binary(), cutoff(), payment_ref()) ->
     {ok, affinity()} | {error, term()}.
-bind(CustomerID, ProviderRef, TerminalRef, Cutoff, Payment) ->
+bind(CustomerID, PartyRef, ProviderRef, TerminalRef, Cutoff, Payment) ->
     %% Several statements in a single transaction rather than a data-modifying CTE: CTE
     %% branches share one snapshot and would not see each other's effects.
     Fun = fun(Conn) ->
         ok = lock_customer(Conn, CustomerID),
+        %% The payment is made in the party, so the customer has to be in it
+        PartyID =
+            case cs_customer_database:member(Conn, CustomerID, PartyRef) of
+                {ok, ID} -> ID;
+                {error, Reason} -> rollback(Reason)
+            end,
         %% Idempotency by payment: the payment ledger remembers which binding each
         %% payment made, and a repeat call by the same payment returns it untouched.
         %% Otherwise a retried machine step would read as another successful payment:
         %% a binding expired in between would be released and rebound at the tail.
-        case remember_payment(Conn, CustomerID, Payment) of
+        case remember_payment(Conn, CustomerID, PartyID, Payment) of
             {bound, AffinityID} ->
                 get_affinity(Conn, AffinityID);
             {fresh, PaymentRefID} ->
@@ -152,14 +158,14 @@ lock_customer(Conn, CustomerID) ->
 %% Puts the payment in the ledger and answers whether it has already made a binding.
 %% Writing to the ledger is exactly what AddPayment does, so hellgate no longer calls
 %% AddPayment separately.
-remember_payment(Conn, CustomerID, #{invoice_id := InvoiceID, payment_id := PaymentID}) ->
+remember_payment(Conn, CustomerID, PartyID, #{invoice_id := InvoiceID, payment_id := PaymentID}) ->
     Query = """
-    INSERT INTO payment_ref (customer_id, invoice_id, payment_id)
-    VALUES ($1::uuid, $2, $3)
+    INSERT INTO payment_ref (customer_id, party_id, invoice_id, payment_id)
+    VALUES ($1::uuid, $2, $3, $4)
     ON CONFLICT (invoice_id, payment_id) DO NOTHING
     RETURNING id
     """,
-    case query_rows(Conn, Query, [CustomerID, InvoiceID, PaymentID]) of
+    case query_rows(Conn, Query, [CustomerID, PartyID, InvoiceID, PaymentID]) of
         {ok, [{PaymentRefID}]} -> {fresh, PaymentRefID};
         {ok, []} -> lookup_payment(Conn, CustomerID, InvoiceID, PaymentID);
         {error, Reason} -> rollback(Reason)

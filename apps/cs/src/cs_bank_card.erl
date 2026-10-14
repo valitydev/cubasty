@@ -11,6 +11,7 @@
     get_info/1,
     find/2,
     find_with_tokens/2,
+    find_or_create/2,
     find_or_create/3,
     get_recurrent_tokens/1,
     add_recurrent_token/4,
@@ -110,6 +111,11 @@ find_with_tokens(BankCardToken, PartyRef) ->
         Error ->
             Error
     end.
+
+%% Grants the card to no party: a customer's card is granted to its parties when linked
+-spec find_or_create(binary(), binary() | undefined) -> {ok, bank_card_id()} | {error, term()}.
+find_or_create(BankCardToken, CardMask) ->
+    cs_bank_card_database:find_or_create(BankCardToken, CardMask).
 
 -spec find_or_create(party_ref(), binary(), binary() | undefined) ->
     {ok, bank_card_id()} | {error, term()}.

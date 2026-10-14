@@ -7,6 +7,7 @@
     get_with_providers/1,
     find/2,
     find_with_tokens/2,
+    find_or_create/2,
     find_or_create/3,
     delete/1,
     add_party_ref/2,
@@ -192,6 +193,25 @@ find_with_tokens(BankCardToken, PartyRef) ->
             {error, not_found};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% The card alone, available to no party yet: the caller grants it to parties itself
+-spec find_or_create(binary(), binary() | undefined) -> {ok, bank_card_id()} | {error, term()}.
+find_or_create(BankCardToken, CardMask) ->
+    Query = """
+    MERGE INTO bank_card AS target
+    USING (SELECT $1::text AS bank_card_token, $2::text AS card_mask) AS source
+    ON target.bank_card_token = source.bank_card_token AND target.deleted_at IS NULL
+    WHEN NOT MATCHED THEN
+        INSERT (bank_card_token, card_mask) VALUES (source.bank_card_token, source.card_mask)
+    WHEN MATCHED THEN
+        UPDATE SET card_mask = source.card_mask
+    RETURNING id
+    """,
+    case query_rows(?POOL, Query, [BankCardToken, CardMask]) of
+        {ok, [{BankCardId}]} -> {ok, BankCardId};
+        {ok, []} -> {error, failed_to_create};
+        {error, Reason} -> {error, Reason}
     end.
 
 -spec find_or_create(binary(), binary(), binary() | undefined) ->

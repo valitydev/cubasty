@@ -4,7 +4,7 @@
 
 -export([
     list/1,
-    bind/5,
+    bind/6,
     release/3,
     release_by_customer/2,
     release_by_terminal/2
@@ -14,6 +14,7 @@
     affinity/0,
     cutoff/0,
     customer_id/0,
+    party_ref/0,
     provider_ref/0,
     terminal_ref/0,
     provider_terminal_key/0,
@@ -24,6 +25,7 @@
 
 %% Types
 -type customer_id() :: cs_customer:customer_id().
+-type party_ref() :: cs_customer:party_ref().
 -type provider_ref() :: dmsl_domain_thrift:'ProviderRef'().
 -type terminal_ref() :: dmsl_domain_thrift:'TerminalRef'().
 -type provider_terminal_key() :: dmsl_customer_thrift:'ProviderTerminalKey'().
@@ -39,8 +41,8 @@
 
 -spec list(customer_id()) -> {ok, [affinity()]} | {error, not_found | term()}.
 list(CustomerID) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _Customer} ->
+    case cs_customer:exists(CustomerID) of
+        ok ->
             cs_terminal_affinity_database:list(CustomerID);
         Error ->
             Error
@@ -48,20 +50,20 @@ list(CustomerID) ->
 
 %% The payment is both the idempotency key of the bind and the payment remembered for
 %% the Customer; the database layer does the two in one transaction.
--spec bind(customer_id(), provider_ref(), terminal_ref(), ttl(), payment_ref()) ->
+-spec bind(customer_id(), party_ref(), provider_ref(), terminal_ref(), ttl(), payment_ref()) ->
     {ok, affinity()} | {error, not_found | invalid_request | invalid_payment | term()}.
-bind(CustomerID, ProviderRef, TerminalRef, Ttl, Payment) ->
+bind(CustomerID, PartyRef, ProviderRef, TerminalRef, Ttl, Payment) ->
     case payment_to_map(Payment) of
         {ok, PaymentMap} ->
-            do_bind(CustomerID, ProviderRef, TerminalRef, Ttl, PaymentMap);
+            do_bind(CustomerID, PartyRef, ProviderRef, TerminalRef, Ttl, PaymentMap);
         {error, _} = Error ->
             Error
     end.
 
 -spec release(customer_id(), provider_terminal_key(), reason()) -> ok | {error, not_found | term()}.
 release(CustomerID, #customer_ProviderTerminalKey{} = Key, Reason) ->
-    case cs_customer:get(CustomerID) of
-        {ok, _Customer} ->
+    case cs_customer:exists(CustomerID) of
+        ok ->
             {ProviderRefJson, TerminalRefJson} = key_to_json(Key),
             Result = cs_terminal_affinity_database:release(
                 CustomerID, ProviderRefJson, TerminalRefJson, Reason
@@ -95,17 +97,23 @@ release_by_terminal(#customer_ProviderTerminalKey{} = Key, Reason) ->
 %% Internal functions
 
 -spec do_bind(
-    customer_id(), provider_ref(), terminal_ref(), ttl(), cs_terminal_affinity_database:payment_ref()
+    customer_id(),
+    party_ref(),
+    provider_ref(),
+    terminal_ref(),
+    ttl(),
+    cs_terminal_affinity_database:payment_ref()
 ) ->
     {ok, affinity()} | {error, not_found | invalid_request | term()}.
-do_bind(CustomerID, ProviderRef, TerminalRef, Ttl, PaymentMap) ->
+do_bind(CustomerID, PartyRef, ProviderRef, TerminalRef, Ttl, PaymentMap) ->
     case ttl_to_cutoff(Ttl) of
         {ok, Cutoff} ->
-            %% The bind transaction checks that the Customer exists itself: a check from
+            %% The bind transaction checks that the Customer is in the party itself: a check from
             %% here, outside it, drifts apart from the write under a concurrent delete
             {ProviderRefJson, TerminalRefJson} = refs_to_json(ProviderRef, TerminalRef),
+            PartyRefJson = ref_to_json(PartyRef, {struct, struct, {dmsl_domain_thrift, 'PartyConfigRef'}}),
             cs_terminal_affinity_database:bind(
-                CustomerID, ProviderRefJson, TerminalRefJson, Cutoff, PaymentMap
+                CustomerID, PartyRefJson, ProviderRefJson, TerminalRefJson, Cutoff, PaymentMap
             );
         {error, _} = Error ->
             Error
