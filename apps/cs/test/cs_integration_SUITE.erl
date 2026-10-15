@@ -355,7 +355,7 @@ get_payments_test(Config) ->
     PartyRef = Customer#customer_Customer.party_ref,
     {ok, ok} = cs_client:add_payment(CustomerID, <<"inv-1">>, <<"pay-1">>, PartyRef, Client),
     {ok, ok} = cs_client:add_payment(CustomerID, <<"inv-2">>, <<"pay-2">>, PartyRef, Client),
-    {ok, Response} = cs_client:get_payments(CustomerID, 10, undefined, PartyRef, Client),
+    {ok, Response} = cs_client:get_payments(CustomerID, PartyRef, 10, undefined, Client),
     ?assertEqual(2, length(Response#customer_CustomerPaymentsResponse.payments)),
     ok.
 
@@ -379,19 +379,19 @@ get_payments_pagination_test(Config) ->
         lists:seq(1, 5)
     ),
     %% Get first page (limit 2)
-    {ok, Response1} = cs_client:get_payments(CustomerID, 2, undefined, PartyRef, Client),
+    {ok, Response1} = cs_client:get_payments(CustomerID, PartyRef, 2, undefined, Client),
     Payments1 = Response1#customer_CustomerPaymentsResponse.payments,
     Token1 = Response1#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(2, length(Payments1)),
     ?assertNotEqual(undefined, Token1),
     %% Get second page
-    {ok, Response2} = cs_client:get_payments(CustomerID, 2, Token1, PartyRef, Client),
+    {ok, Response2} = cs_client:get_payments(CustomerID, PartyRef, 2, Token1, Client),
     Payments2 = Response2#customer_CustomerPaymentsResponse.payments,
     Token2 = Response2#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(2, length(Payments2)),
     ?assertNotEqual(undefined, Token2),
     %% Get third page (only 1 remaining)
-    {ok, Response3} = cs_client:get_payments(CustomerID, 2, Token2, PartyRef, Client),
+    {ok, Response3} = cs_client:get_payments(CustomerID, PartyRef, 2, Token2, Client),
     Payments3 = Response3#customer_CustomerPaymentsResponse.payments,
     Token3 = Response3#customer_CustomerPaymentsResponse.continuation_token,
     ?assertEqual(1, length(Payments3)),
@@ -510,7 +510,7 @@ add_withdrawal_not_found_test(Config) ->
         <<"00000000-0000-0000-0000-000000000000">>, <<"wd-not-found">>, PartyRef, Client
     ),
     {exception, #customer_CustomerNotFound{}} = cs_client:get_withdrawals(
-        <<"00000000-0000-0000-0000-000000000000">>, 10, undefined, PartyRef, Client
+        <<"00000000-0000-0000-0000-000000000000">>, PartyRef, 10, undefined, Client
     ),
     %% A customer outside the party is not found in it either
     {ok, Customer} = cs_client:create_customer(#customer_CustomerParams{party_ref = PartyRef}, Client),
@@ -519,7 +519,7 @@ add_withdrawal_not_found_test(Config) ->
     {exception, #customer_CustomerNotFound{}} =
         cs_client:add_withdrawal(CustomerID, <<"wd-not-found">>, OtherPartyRef, Client),
     {exception, #customer_CustomerNotFound{}} =
-        cs_client:get_withdrawals(CustomerID, 10, undefined, OtherPartyRef, Client),
+        cs_client:get_withdrawals(CustomerID, OtherPartyRef, 10, undefined, Client),
     ok.
 
 get_withdrawals_test(Config) ->
@@ -532,7 +532,7 @@ get_withdrawals_test(Config) ->
     PartyRef = Customer#customer_Customer.party_ref,
     {ok, ok} = cs_client:add_withdrawal(CustomerID, <<"wd-list-1">>, PartyRef, Client),
     {ok, ok} = cs_client:add_withdrawal(CustomerID, <<"wd-list-2">>, PartyRef, Client),
-    {ok, Response} = cs_client:get_withdrawals(CustomerID, 10, undefined, PartyRef, Client),
+    {ok, Response} = cs_client:get_withdrawals(CustomerID, PartyRef, 10, undefined, Client),
     Withdrawals = Response#customer_CustomerWithdrawalsResponse.withdrawals,
     ?assertEqual(
         [<<"wd-list-1">>, <<"wd-list-2">>],
@@ -557,15 +557,15 @@ get_withdrawals_pagination_test(Config) ->
         end,
         lists:seq(1, 5)
     ),
-    {ok, Response1} = cs_client:get_withdrawals(CustomerID, 2, undefined, PartyRef, Client),
+    {ok, Response1} = cs_client:get_withdrawals(CustomerID, PartyRef, 2, undefined, Client),
     Token1 = Response1#customer_CustomerWithdrawalsResponse.continuation_token,
     ?assertEqual(2, length(Response1#customer_CustomerWithdrawalsResponse.withdrawals)),
     ?assertNotEqual(undefined, Token1),
-    {ok, Response2} = cs_client:get_withdrawals(CustomerID, 2, Token1, PartyRef, Client),
+    {ok, Response2} = cs_client:get_withdrawals(CustomerID, PartyRef, 2, Token1, Client),
     Token2 = Response2#customer_CustomerWithdrawalsResponse.continuation_token,
     ?assertEqual(2, length(Response2#customer_CustomerWithdrawalsResponse.withdrawals)),
     ?assertNotEqual(undefined, Token2),
-    {ok, Response3} = cs_client:get_withdrawals(CustomerID, 2, Token2, PartyRef, Client),
+    {ok, Response3} = cs_client:get_withdrawals(CustomerID, PartyRef, 2, Token2, Client),
     ?assertEqual(1, length(Response3#customer_CustomerWithdrawalsResponse.withdrawals)),
     ?assertEqual(undefined, Response3#customer_CustomerWithdrawalsResponse.continuation_token),
     ok.
@@ -637,7 +637,7 @@ payments_and_withdrawals_by_party_test(Config) ->
             ),
             ?assertEqual({ok, [{InvoiceID, PaymentID}]}, payments_of(CustomerID, PartyRef, Client)),
             {ok, #customer_CustomerWithdrawalsResponse{withdrawals = [Withdrawal]}} =
-                cs_client:get_withdrawals(CustomerID, 10, undefined, PartyRef, Client),
+                cs_client:get_withdrawals(CustomerID, PartyRef, 10, undefined, Client),
             ?assertEqual(WithdrawalID, Withdrawal#customer_CustomerWithdrawal.withdrawal_id)
         end,
         [{OwnerPartyRef, <<"owner">>}, {LinkedPartyRef, <<"linked">>}]
@@ -652,7 +652,7 @@ payments_and_withdrawals_by_party_test(Config) ->
     {exception, #customer_CustomerNotFound{}} =
         cs_client:add_payment(CustomerID, <<"inv-ops-other">>, <<"pay-ops-other">>, OtherPartyRef, Client),
     {exception, #customer_CustomerNotFound{}} =
-        cs_client:get_payments(CustomerID, 10, undefined, OtherPartyRef, Client),
+        cs_client:get_payments(CustomerID, OtherPartyRef, 10, undefined, Client),
     {exception, #customer_CustomerNotFound{}} =
         cs_client:get_customer_by_parent_payment(<<"inv-ops-owner">>, <<"pay-ops-owner">>, OtherPartyRef, Client),
     ok.
@@ -1499,7 +1499,7 @@ last_used_at(#customer_TerminalAffinity{last_used_at = Timestamp}) ->
     calendar:rfc3339_to_system_time(binary_to_list(Timestamp), [{unit, microsecond}]).
 
 payments_of(CustomerID, PartyRef, Client) ->
-    case cs_client:get_payments(CustomerID, 100, undefined, PartyRef, Client) of
+    case cs_client:get_payments(CustomerID, PartyRef, 100, undefined, Client) of
         {ok, #customer_CustomerPaymentsResponse{payments = Payments}} ->
             {ok, [
                 {InvoiceID, PaymentID}

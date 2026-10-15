@@ -165,7 +165,7 @@ do_handle_function('AddPayment', {CustomerID, InvoiceId, PaymentId, PartyRef}, _
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetPayments', {CustomerID, Limit, ContinuationToken, PartyRef}, _Context, _Options) ->
+do_handle_function('GetPayments', {CustomerID, PartyRef, Limit, ContinuationToken}, _Context, _Options) ->
     Offset = cs_pagination:decode(ContinuationToken),
     case cs_customer:get_payments(CustomerID, PartyRef, Limit, Offset) of
         {ok, Payments, NextToken} ->
@@ -192,7 +192,7 @@ do_handle_function('AddWithdrawal', {CustomerID, WithdrawalID, PartyRef}, _Conte
         {error, Reason} ->
             woody_error:raise(system, {internal, Reason})
     end;
-do_handle_function('GetWithdrawals', {CustomerID, Limit, ContinuationToken, PartyRef}, _Context, _Options) ->
+do_handle_function('GetWithdrawals', {CustomerID, PartyRef, Limit, ContinuationToken}, _Context, _Options) ->
     Offset = cs_pagination:decode(ContinuationToken),
     case cs_customer:get_withdrawals(CustomerID, PartyRef, Limit, Offset) of
         {ok, Withdrawals, NextToken} ->

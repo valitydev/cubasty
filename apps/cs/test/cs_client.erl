@@ -81,11 +81,11 @@ add_payment(CustomerID, InvoiceId, PaymentId, PartyRef, Client) ->
     cs_client_api:call(customer_management, 'AddPayment', [CustomerID, InvoiceId, PaymentId, PartyRef], Client).
 
 -spec get_payments(
-    binary(), integer(), binary() | undefined, dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()
+    binary(), dmsl_domain_thrift:'PartyConfigRef'(), integer(), binary() | undefined, cs_client_api:t()
 ) ->
     {ok, dmsl_customer_thrift:'CustomerPaymentsResponse'()} | {exception, term()} | {error, term()}.
-get_payments(CustomerID, Limit, ContinuationToken, PartyRef, Client) ->
-    cs_client_api:call(customer_management, 'GetPayments', [CustomerID, Limit, ContinuationToken, PartyRef], Client).
+get_payments(CustomerID, PartyRef, Limit, ContinuationToken, Client) ->
+    cs_client_api:call(customer_management, 'GetPayments', [CustomerID, PartyRef, Limit, ContinuationToken], Client).
 
 -spec add_withdrawal(binary(), binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
     {ok, ok} | {exception, term()} | {error, term()}.
@@ -93,12 +93,12 @@ add_withdrawal(CustomerID, WithdrawalID, PartyRef, Client) ->
     cs_client_api:call(customer_management, 'AddWithdrawal', [CustomerID, WithdrawalID, PartyRef], Client).
 
 -spec get_withdrawals(
-    binary(), integer(), binary() | undefined, dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()
+    binary(), dmsl_domain_thrift:'PartyConfigRef'(), integer(), binary() | undefined, cs_client_api:t()
 ) ->
     {ok, dmsl_customer_thrift:'CustomerWithdrawalsResponse'()} | {exception, term()} | {error, term()}.
-get_withdrawals(CustomerID, Limit, ContinuationToken, PartyRef, Client) ->
+get_withdrawals(CustomerID, PartyRef, Limit, ContinuationToken, Client) ->
     cs_client_api:call(
-        customer_management, 'GetWithdrawals', [CustomerID, Limit, ContinuationToken, PartyRef], Client
+        customer_management, 'GetWithdrawals', [CustomerID, PartyRef, Limit, ContinuationToken], Client
     ).
 
 -spec get_customer_by_withdrawal(binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
