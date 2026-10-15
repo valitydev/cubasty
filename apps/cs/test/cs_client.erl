@@ -6,17 +6,22 @@
 %% CustomerManagement API
 -export([
     create_customer/2,
-    get_customer/2,
+    get_customer/3,
     get_customer_by_external_id/3,
-    get_customer_by_parent_payment/3,
+    get_customer_by_parent_payment/4,
     delete_customer/2,
     add_bank_card/3,
     remove_bank_card/3,
-    add_payment/4,
-    get_payments/4,
+    add_payment/5,
+    get_payments/5,
+    add_withdrawal/4,
+    get_withdrawals/5,
+    get_customer_by_withdrawal/3,
     get_bank_cards/4,
     find_or_create_customer_by_email/3,
     get_customer_by_email/3,
+    find_or_create_customer_by_external_id/3,
+    add_external_id/4,
     get_terminal_affinities/2,
     bind_terminal_affinity/2,
     release_terminal_affinity/2,
@@ -40,20 +45,20 @@
 create_customer(Params, Client) ->
     cs_client_api:call(customer_management, 'Create', [Params], Client).
 
--spec get_customer(binary(), cs_client_api:t()) ->
+-spec get_customer(binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
-get_customer(CustomerID, Client) ->
-    cs_client_api:call(customer_management, 'Get', [CustomerID], Client).
+get_customer(CustomerID, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'Get', [CustomerID, PartyRef], Client).
 
 -spec get_customer_by_external_id(binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
 get_customer_by_external_id(ExternalID, PartyRef, Client) ->
     cs_client_api:call(customer_management, 'GetByExternalID', [ExternalID, PartyRef], Client).
 
--spec get_customer_by_parent_payment(binary(), binary(), cs_client_api:t()) ->
+-spec get_customer_by_parent_payment(binary(), binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
-get_customer_by_parent_payment(InvoiceId, PaymentId, Client) ->
-    cs_client_api:call(customer_management, 'GetByParentPayment', [InvoiceId, PaymentId], Client).
+get_customer_by_parent_payment(InvoiceId, PaymentId, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'GetByParentPayment', [InvoiceId, PaymentId, PartyRef], Client).
 
 -spec delete_customer(binary(), cs_client_api:t()) ->
     {ok, ok} | {exception, term()} | {error, term()}.
@@ -70,15 +75,36 @@ add_bank_card(CustomerID, Params, Client) ->
 remove_bank_card(CustomerID, BankCardId, Client) ->
     cs_client_api:call(customer_management, 'RemoveBankCard', [CustomerID, BankCardId], Client).
 
--spec add_payment(binary(), binary(), binary(), cs_client_api:t()) ->
+-spec add_payment(binary(), binary(), binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
     {ok, ok} | {exception, term()} | {error, term()}.
-add_payment(CustomerID, InvoiceId, PaymentId, Client) ->
-    cs_client_api:call(customer_management, 'AddPayment', [CustomerID, InvoiceId, PaymentId], Client).
+add_payment(CustomerID, InvoiceId, PaymentId, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'AddPayment', [CustomerID, InvoiceId, PaymentId, PartyRef], Client).
 
--spec get_payments(binary(), integer(), binary() | undefined, cs_client_api:t()) ->
+-spec get_payments(
+    binary(), dmsl_domain_thrift:'PartyConfigRef'(), integer(), binary() | undefined, cs_client_api:t()
+) ->
     {ok, dmsl_customer_thrift:'CustomerPaymentsResponse'()} | {exception, term()} | {error, term()}.
-get_payments(CustomerID, Limit, ContinuationToken, Client) ->
-    cs_client_api:call(customer_management, 'GetPayments', [CustomerID, Limit, ContinuationToken], Client).
+get_payments(CustomerID, PartyRef, Limit, ContinuationToken, Client) ->
+    cs_client_api:call(customer_management, 'GetPayments', [CustomerID, PartyRef, Limit, ContinuationToken], Client).
+
+-spec add_withdrawal(binary(), binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
+    {ok, ok} | {exception, term()} | {error, term()}.
+add_withdrawal(CustomerID, WithdrawalID, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'AddWithdrawal', [CustomerID, WithdrawalID, PartyRef], Client).
+
+-spec get_withdrawals(
+    binary(), dmsl_domain_thrift:'PartyConfigRef'(), integer(), binary() | undefined, cs_client_api:t()
+) ->
+    {ok, dmsl_customer_thrift:'CustomerWithdrawalsResponse'()} | {exception, term()} | {error, term()}.
+get_withdrawals(CustomerID, PartyRef, Limit, ContinuationToken, Client) ->
+    cs_client_api:call(
+        customer_management, 'GetWithdrawals', [CustomerID, PartyRef, Limit, ContinuationToken], Client
+    ).
+
+-spec get_customer_by_withdrawal(binary(), dmsl_domain_thrift:'PartyConfigRef'(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
+get_customer_by_withdrawal(WithdrawalID, PartyRef, Client) ->
+    cs_client_api:call(customer_management, 'GetByWithdrawal', [WithdrawalID, PartyRef], Client).
 
 -spec get_bank_cards(binary(), integer(), binary() | undefined, cs_client_api:t()) ->
     {ok, dmsl_customer_thrift:'CustomerBankCardsResponse'()} | {exception, term()} | {error, term()}.
@@ -94,6 +120,16 @@ find_or_create_customer_by_email(PartyRef, Email, Client) ->
     {ok, dmsl_customer_thrift:'CustomerState'()} | {exception, term()} | {error, term()}.
 get_customer_by_email(PartyRef, Email, Client) ->
     cs_client_api:call(customer_management, 'GetByEmail', [PartyRef, Email], Client).
+
+-spec find_or_create_customer_by_external_id(dmsl_domain_thrift:'PartyConfigRef'(), binary(), cs_client_api:t()) ->
+    {ok, dmsl_customer_thrift:'Customer'()} | {exception, term()} | {error, term()}.
+find_or_create_customer_by_external_id(PartyRef, ExternalID, Client) ->
+    cs_client_api:call(customer_management, 'FindOrCreateByExternalID', [PartyRef, ExternalID], Client).
+
+-spec add_external_id(binary(), dmsl_domain_thrift:'PartyConfigRef'(), binary(), cs_client_api:t()) ->
+    {ok, ok} | {exception, term()} | {error, term()}.
+add_external_id(CustomerID, PartyRef, ExternalID, Client) ->
+    cs_client_api:call(customer_management, 'AddExternalID', [CustomerID, PartyRef, ExternalID], Client).
 
 -spec get_terminal_affinities(binary(), cs_client_api:t()) ->
     {ok, [dmsl_customer_thrift:'TerminalAffinity'()]} | {exception, term()} | {error, term()}.

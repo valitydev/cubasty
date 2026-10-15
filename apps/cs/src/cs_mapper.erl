@@ -10,6 +10,7 @@
     bank_card_with_tokens_to_thrift/1,
     bank_card_info_to_thrift/1,
     payment_to_thrift/1,
+    withdrawal_to_thrift/1,
     recurrent_token_to_thrift/1,
     terminal_affinity_to_thrift/1
 ]).
@@ -18,6 +19,7 @@
     customer/0,
     customer_state/0,
     payment_ref/0,
+    withdrawal_ref/0,
     bank_card_with_tokens/0,
     bank_card_info/0,
     recurrent_token/0,
@@ -29,6 +31,7 @@
 -type customer() :: cs_customer:customer().
 -type customer_state() :: cs_customer:customer_state().
 -type payment_ref() :: cs_customer:payment_ref().
+-type withdrawal_ref() :: cs_customer:withdrawal_ref().
 -type bank_card_with_tokens() :: cs_bank_card:bank_card_with_tokens().
 -type bank_card_info() :: cs_bank_card:bank_card_info().
 -type recurrent_token() :: cs_bank_card_database:recurrent_token().
@@ -57,6 +60,7 @@ customer_state_to_thrift(State) ->
     Customer = maps:get(customer, State),
     BankCardIds = maps:get(bank_card_refs, State, []),
     PaymentRefs = maps:get(payment_refs, State, []),
+    WithdrawalRefs = maps:get(withdrawal_refs, State, []),
     #customer_CustomerState{
         customer = customer_to_thrift(Customer),
         bank_card_refs = [#customer_BankCardRef{id = Id} || Id <- BankCardIds],
@@ -66,6 +70,10 @@ customer_state_to_thrift(State) ->
                 payment_id = maps:get(payment_id, P)
             }
          || P <- PaymentRefs
+        ],
+        withdrawal_refs = [
+            #customer_WithdrawalRef{withdrawal_id = maps:get(withdrawal_id, W)}
+         || W <- WithdrawalRefs
         ]
     }.
 
@@ -116,6 +124,13 @@ payment_to_thrift(Payment) ->
         invoice_id = maps:get(invoice_id, Payment),
         payment_id = maps:get(payment_id, Payment),
         created_at = format_timestamp_required(maps:get(created_at, Payment))
+    }.
+
+-spec withdrawal_to_thrift(withdrawal_ref()) -> dmsl_customer_thrift:'CustomerWithdrawal'().
+withdrawal_to_thrift(Withdrawal) ->
+    #customer_CustomerWithdrawal{
+        withdrawal_id = maps:get(withdrawal_id, Withdrawal),
+        created_at = format_timestamp_required(maps:get(created_at, Withdrawal))
     }.
 
 -spec recurrent_token_to_thrift(recurrent_token()) -> dmsl_customer_thrift:'RecurrentToken'().
