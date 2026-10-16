@@ -20,6 +20,7 @@
 
 -export([
     create_customer_test/1,
+    malformed_customer_id_test/1,
     get_customer_test/1,
     delete_customer_test/1,
     customer_not_found_test/1,
@@ -116,6 +117,7 @@ groups() ->
             add_withdrawal_test,
             add_withdrawal_other_customer_test,
             add_withdrawal_not_found_test,
+            malformed_customer_id_test,
             get_withdrawals_test,
             get_withdrawals_pagination_test,
             get_by_withdrawal_test,
@@ -521,6 +523,27 @@ add_withdrawal_not_found_test(Config) ->
     {exception, #customer_CustomerNotFound{}} =
         cs_client:get_withdrawals(CustomerID, OtherPartyRef, 10, undefined, Client),
     ok.
+
+%% A malformed ID names no Customer, rather than failing the call
+malformed_customer_id_test(Config) ->
+    Client = ?config(client, Config),
+    PartyRef = #domain_PartyConfigRef{id = <<"party-malformed-id">>},
+    lists:foreach(
+        fun(CustomerID) ->
+            {exception, #customer_CustomerNotFound{}} = cs_client:get_customer(CustomerID, PartyRef, Client),
+            {exception, #customer_CustomerNotFound{}} =
+                cs_client:add_payment(CustomerID, <<"inv-malformed">>, <<"1">>, PartyRef, Client),
+            {exception, #customer_CustomerNotFound{}} =
+                cs_client:add_withdrawal(CustomerID, <<"wd-malformed">>, PartyRef, Client),
+            {exception, #customer_CustomerNotFound{}} =
+                cs_client:get_withdrawals(CustomerID, PartyRef, 10, undefined, Client),
+            {exception, #customer_CustomerNotFound{}} =
+                cs_client:get_bank_cards(CustomerID, 10, undefined, Client),
+            {exception, #customer_CustomerNotFound{}} = cs_client:delete_customer(CustomerID, Client),
+            {exception, #customer_CustomerNotFound{}} = cs_client:get_terminal_affinities(CustomerID, Client)
+        end,
+        [<<"cust-123">>, <<>>, <<"00000000-0000-0000-0000-00000000000g">>, <<"00000000000000000000000000000000">>]
+    ).
 
 get_withdrawals_test(Config) ->
     Client = ?config(client, Config),
