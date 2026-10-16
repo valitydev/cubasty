@@ -3,6 +3,7 @@
 -export([
     create/5,
     exists/1,
+    validate_id/1,
     get/2,
     get_state/2,
     get_by_external_id/2,
@@ -25,6 +26,8 @@
 
 -export_type([customer_id/0, bank_card_id/0, party_ref/0, contact_info/0, metadata/0]).
 -export_type([customer/0, customer_state/0, payment_ref/0, withdrawal_ref/0, email/0, external_id/0]).
+
+-define(CUSTOMER_ID_RE, "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").
 
 %% Reason recorded on affinities released together with the customer
 -define(DELETED_REASON, <<"customer_deleted">>).
@@ -84,6 +87,15 @@ create(PartyRef, ContactInfo, Metadata, ExternalID, Email) ->
             );
         {error, _} = Error ->
             Error
+    end.
+
+%% Customer IDs are UUIDs in the canonical form the database issues them in. A string of any
+%% other form names no Customer, and is not passed on to the database, which rejects it as malformed
+-spec validate_id(binary()) -> ok | {error, not_found}.
+validate_id(CustomerID) ->
+    case re:run(CustomerID, ?CUSTOMER_ID_RE, [{capture, none}]) of
+        match -> ok;
+        nomatch -> {error, not_found}
     end.
 
 -spec exists(customer_id()) -> ok | {error, not_found | term()}.
